@@ -83,6 +83,9 @@ class MinMaxNormalizationCallback(Callback):
             outputs["pred_scores"], pl_module.image_threshold.value.cpu(), stats.min, stats.max
         )
         if "anomaly_maps" in outputs.keys():
+            outputs["anomaly_maps_image_threshold"] = normalize(
+                outputs["anomaly_maps"], pl_module.image_threshold.value.cpu(), stats.min, stats.max
+            )
             outputs["anomaly_maps"] = normalize(
                 outputs["anomaly_maps"], pl_module.pixel_threshold.value.cpu(), stats.min, stats.max
             )

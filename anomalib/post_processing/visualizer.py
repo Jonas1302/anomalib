@@ -32,6 +32,7 @@ class ImageResult:
     anomaly_map: Optional[np.ndarray] = None
     gt_mask: Optional[np.ndarray] = None
     pred_mask: Optional[np.ndarray] = None
+    pred_mask_image_threshold: Optional[np.ndarray] = None
 
     heat_map: np.ndarray = field(init=False)
     segmentations: np.ndarray = field(init=False)
@@ -45,6 +46,8 @@ class ImageResult:
             self.segmentations = mark_boundaries(self.image, self.pred_mask, color=(1, 0, 0), mode="thick")
             if self.segmentations.max() <= 1.0:
                 self.segmentations = (self.segmentations * 255).astype(np.uint8)
+        if self.pred_mask_image_threshold is not None and self.pred_mask_image_threshold.max() <= 1.0:
+            self.pred_mask_image_threshold *= 255
         if self.gt_mask is not None and self.gt_mask.max() <= 1.0:
             self.gt_mask *= 255
 
@@ -84,12 +87,16 @@ class Visualizer:
                 # re-read because `batch["image"]` was normalized
                 image = read_image(path=batch["image_path"][i], image_size=(height, width))
 
+            # if task is classification, use segmentation calculated with image threshold
+            pred_masks_key = "pred_masks_image_threshold" if self.task == "classification" else "pred_masks"
+
             image_result = ImageResult(
                 image=image,
                 pred_score=batch["pred_scores"][i].cpu().numpy().item(),
                 pred_label=batch["pred_labels"][i].cpu().numpy().item(),
                 anomaly_map=batch["anomaly_maps"][i].cpu().numpy() if "anomaly_maps" in batch else None,
                 pred_mask=batch["pred_masks"][i].squeeze().int().cpu().numpy() if "pred_masks" in batch else None,
+                pred_mask_image_threshold=batch["pred_masks_image_threshold"][i].squeeze().int().cpu().numpy() if "pred_masks_image_threshold" in batch else None,
                 gt_mask=batch["mask"][i].squeeze().int().cpu().numpy() if "mask" in batch else None,
             )
             yield self.visualize_image(image_result)
@@ -135,6 +142,8 @@ class Visualizer:
             visualization.add_image(image=image_result.gt_mask, color_map="gray", title="Ground Truth")
         visualization.add_image(image_result.heat_map, "Predicted Heat Map")
         visualization.add_image(image=image_result.pred_mask, color_map="gray", title="Predicted Mask")
+        if self.task == "classification" and hasattr(image_result, "pred_mask_image_threshold"):
+            visualization.add_image(image=image_result.pred_mask_image_threshold, color_map="gray", title="Predicted Mask (Image Threshold)")
         segmentation_result = self._add_label(image_result.segmentations, image_result)
         visualization.add_image(image=segmentation_result, title="Segmentation Result")
 
