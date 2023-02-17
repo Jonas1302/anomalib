@@ -67,6 +67,7 @@ def make_mvtec_dataset(
     create_validation_set: bool = False,
     custom_mapping: Optional[DictConfig] = None,
     category: str = None,
+    binary_label_indices: bool = True,
 ) -> DataFrame:
     """Create MVTec AD samples by parsing the MVTec AD data file structure.
 
@@ -91,6 +92,11 @@ def make_mvtec_dataset(
         create_validation_set (bool, optional): Boolean to create a validation set from the test set.
             MVTec AD dataset does not contain a validation set. Those wanting to create a validation set
             could set this flag to ``True``.
+        custom_mapping (DictConfig, optional): Config which can be used to overwrite the default labels of an
+            anomaly type or to ignore it.
+        category (str): name of the current category, used to acces the correct values/sub-dict from `custom_mapping`
+        binary_label_indices (bool): whether to use only 0 (normal) and 1 (anomalous) for label indices or
+            a separate number for each anomaly type.
 
     Examples:
         The following example shows how to get training samples from MVTec AD bottle category:
@@ -142,41 +148,37 @@ def make_mvtec_dataset(
     # Good images don't have mask
     samples.loc[(samples.split == "test") & (samples.label == "good"), "mask_path"] = ""
 
-    # Create label index for normal (0) and anomalous (1) images.
-    samples.loc[(samples.label == "good"), "label_index"] = 0
-    samples.loc[(samples.label != "good"), "label_index"] = 1
-
-    if custom_mapping:  # apply custom changes to the dataset
-        for class_label, class_mode in custom_mapping.custom_labels[category].items():
-            assert samples.label.isin([class_label]).any(), f"category '{category}' does not contain given label '{class_label}'"
-            if class_mode == "ignore":
-                samples = samples[samples.label != class_label]
-            elif class_mode == "train":
-                if class_label == "good":
-                    continue
-                indices = (samples.label == class_label)
-                # note: changing `samples.label_index` seems to be enough, `samples.label` isn't used anywhere below
-                samples.loc[indices, "label_index"] = 0
-                samples.loc[indices, "mask_path"] = ""
-                num_training_samples = int(len(samples.label[indices]) * custom_mapping.train_ratio_for_anomalies)
-                samples_labeled_splits = samples.split[indices]
-                """
-                # add samples everywhere # TODO: remove, only for debugging
-                samples_labeled_splits[:num_training_samples] = split #"train"
-                """
-                samples_labeled_splits[:num_training_samples] = "train"
-                #"""
-                samples.loc[indices, "split"] = samples_labeled_splits
-            elif class_mode == "test":
-                if class_label != "good":
-                    continue
-                # discard all good training images
-                # (adding them to "test" would create an imbalance with other anomaly classes which have fewer images)
-                samples = samples[(samples.split != "train") | (samples.label != "good")]
-                # mark the remaining test images as anomalous
-                samples.loc[samples.label == "good", "label_index"] = 1
-            else:
-                raise Exception(f"unknown mode {class_mode} (must be either 'train', 'test' or 'ignore'")
+    if binary_label_indices:
+        # Create label index for normal (0) and anomalous (1) images.
+        samples.loc[(samples.label == "good"), "label_index"] = 0
+        samples.loc[(samples.label != "good"), "label_index"] = 1
+        if custom_mapping:  # apply custom changes to the dataset
+            for class_label, class_mode in custom_mapping.custom_labels[category].items():
+                assert samples.label.isin([class_label]).any(), f"category '{category}' does not contain given label '{class_label}'"
+                if class_mode == "ignore":
+                    samples = samples[samples.label != class_label]
+                elif class_mode == "normal":
+                    add_anomaly_to_train(samples, class_label, custom_mapping.train_ratio_for_anomalies)
+                elif class_mode == "anomaly":
+                    if class_label != "good":
+                        continue  # non-"good" classes are in "test" by default
+                    # discard all good training images
+                    # (adding them to "test" would create an imbalance with other anomaly classes which have fewer images)
+                    samples = samples[(samples.split != "train") | (samples.label != "good")]
+                    # mark the remaining test images as anomalous
+                    samples.loc[samples.label == "good", "label_index"] = 1
+                else:
+                    raise Exception(f"unknown mode {class_mode} (must be either 'train', 'test' or 'ignore'")
+    else:
+        samples.loc[(samples.label == "good"), "label_index"] = 0
+        i = 1
+        for label in set(samples.label):
+            if custom_mapping.custom_labels[category].get(label) == "ignore":
+                samples = samples[samples.label != label]
+            elif label != "good":
+                add_anomaly_to_train(samples, label, custom_mapping.train_ratio_for_anomalies if custom_mapping else 0.5)
+                samples.loc[(samples.label == label), "label_index"] = i
+                i += 1
 
     samples.label_index = samples.label_index.astype(int)
 
@@ -189,6 +191,21 @@ def make_mvtec_dataset(
         samples = samples.reset_index(drop=True)
 
     return samples
+
+
+def add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
+    if class_label == "good":
+        return  # "good" is in "train" by default
+
+    indices = (samples.label == class_label)
+    # note: changing `samples.label_index` is enough, we do not need to change `samples.label`
+    samples.loc[indices, "label_index"] = 0
+
+    # add some images to the training set
+    num_training_samples = int(len(samples.label[indices]) * train_ratio_for_anomalies)
+    samples_labeled_splits = samples.split[indices]
+    samples_labeled_splits[:num_training_samples] = "train"
+    samples.loc[indices, "split"] = samples_labeled_splits
 
 
 class MVTecDataset(VisionDataset):
@@ -255,6 +272,9 @@ class MVTecDataset(VisionDataset):
                 " This will lead to inconsistency between runs."
             )
 
+        if custom_mapping and custom_mapping.custom_labels[category] is None:
+            custom_mapping.custom_labels[category] = {}  # prevents additional checks for being `None`
+
         assert (not custom_mapping) \
                or custom_mapping.custom_labels[category].get("good") != "anomaly" \
                or task == "classification", \
@@ -272,7 +292,8 @@ class MVTecDataset(VisionDataset):
             seed=seed,
             create_validation_set=create_validation_set,
             custom_mapping=custom_mapping,
-            category = category,
+            category=category,
+            binary_label_indices=(task != "classification"),
         )
 
     def __len__(self) -> int:
@@ -300,28 +321,28 @@ class MVTecDataset(VisionDataset):
             "image_visualization": pre_processed_no_normalization["image"]
         }
 
-        if self.split in ["val", "test"]:
+        if self.split in ["val", "test"] or self.task == "classification":
             label_index = self.samples.label_index[index]
 
             item["image_path"] = image_path
             item["label"] = label_index
+            item["label_name"] = self.samples.label[index]
 
-            if self.task == "segmentation":
-                mask_path = self.samples.mask_path[index]
+            mask_path = self.samples.mask_path[index]
 
-                # Only Anomalous (1) images has masks in MVTec AD dataset.
-                # Therefore, create empty mask for Normal (0) images.
-                if label_index == 0:
-                    mask = np.zeros(shape=image.shape[:2])
-                else:
-                    mask = cv2.imread(mask_path, flags=0) / 255.0
+            # Only anomalous (1) images have masks in MVTec AD dataset.
+            # Therefore, create empty masks for normal (0) images.
+            if label_index == 0:
+                mask = np.zeros(shape=image.shape[:2])
+            else:
+                mask = cv2.imread(mask_path, flags=0) / 255.0
 
-                pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
+            pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
 
-                item["mask_path"] = mask_path
-                item["image"] = pre_processed["image"]
-                item["image_visualization"] = pre_processed_no_normalization["image"]
-                item["mask"] = pre_processed["mask"]
+            item["mask_path"] = mask_path
+            item["image"] = pre_processed["image"]
+            item["image_visualization"] = pre_processed_no_normalization["image"]
+            item["mask"] = pre_processed["mask"]
 
         return item
 
