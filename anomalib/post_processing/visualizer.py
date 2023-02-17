@@ -100,6 +100,12 @@ class Visualizer:
             return self._visualize_simple(image_result)
         raise ValueError(f"Unknown visualization mode: {self.mode}")
 
+    def _add_label(self, image: np.ndarray, image_result: ImageResult) -> np.ndarray:
+        if image_result.pred_label:
+            return add_anomalous_label(image, image_result.pred_score)
+        else:
+            return add_normal_label(image, 1 - image_result.pred_score)
+
     def _visualize_full(self, image_result: ImageResult) -> np.ndarray:
         """Generate the full set of visualization for an image.
 
@@ -114,21 +120,14 @@ class Visualizer:
             An image showing the full set of visualizations for the input image.
         """
         visualization = ImageGrid()
-        if self.task == "segmentation":
-            assert image_result.pred_mask is not None
-            visualization.add_image(image_result.image, "Image")
-            if image_result.gt_mask is not None:
-                visualization.add_image(image=image_result.gt_mask, color_map="gray", title="Ground Truth")
-            visualization.add_image(image_result.heat_map, "Predicted Heat Map")
-            visualization.add_image(image=image_result.pred_mask, color_map="gray", title="Predicted Mask")
-            visualization.add_image(image=image_result.segmentations, title="Segmentation Result")
-        elif self.task == "classification":
-            visualization.add_image(image_result.image, title="Image")
-            if image_result.pred_label:
-                image_classified = add_anomalous_label(image_result.image, image_result.pred_score)
-            else:
-                image_classified = add_normal_label(image_result.image, 1 - image_result.pred_score)
-            visualization.add_image(image=image_classified, title="Prediction")
+        assert image_result.pred_mask is not None
+        visualization.add_image(image_result.image, "Image")
+        if self.task == "segmentation" and image_result.gt_mask is not None:
+            visualization.add_image(image=image_result.gt_mask, color_map="gray", title="Ground Truth")
+        visualization.add_image(image_result.heat_map, "Predicted Heat Map")
+        visualization.add_image(image=image_result.pred_mask, color_map="gray", title="Predicted Mask")
+        segmentation_result = self._add_label(image_result.segmentations, image_result)
+        visualization.add_image(image=segmentation_result, title="Segmentation Result")
 
         return visualization.generate()
 
@@ -147,13 +146,10 @@ class Visualizer:
             visualization = mark_boundaries(
                 image_result.heat_map, image_result.pred_mask, color=(1, 0, 0), mode="thick"
             )
-            return (visualization * 255).astype(np.uint8)
+            visualization = (visualization * 255).astype(np.uint8)
+            return self._add_label(visualization, image_result)
         if self.task == "classification":
-            if image_result.pred_label:
-                image_classified = add_anomalous_label(image_result.image, image_result.pred_score)
-            else:
-                image_classified = add_normal_label(image_result.image, 1 - image_result.pred_score)
-            return image_classified
+            return self._add_label(image_result.image, image_result)
         raise ValueError(f"Unknown task type: {self.task}")
 
     @staticmethod

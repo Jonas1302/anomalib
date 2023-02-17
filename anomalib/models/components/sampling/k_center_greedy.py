@@ -166,7 +166,7 @@ class KCenterGreedyOnline:  # intentionally no subclass of `KCenterGreedy` becau
             for i in range(1, centers.shape[0]):
                 min_distances = self._update_min_distances(features, min_distances, centers[i])
             return min_distances
-        else:
+        else:  # no embeddings in coreset yet => assume a random one is already added
             centers = features[int(torch.randint(high=features.shape[0], size=(1,)).item())]
             return F.pairwise_distance(features, centers, p=2).reshape(-1, 1)
 
