@@ -14,7 +14,7 @@ from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from torch import Tensor
 
-from anomalib.models.components import AnomalyModule
+from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterGreedyRandom
 from anomalib.models.patchcore.torch_model import PatchcoreModel
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class Patchcore(AnomalyModule):
         layers: List[str],
         pre_trained: bool = True,
         coreset_sampling_ratio: float = 0.1,
+        coreset_sampling_mode: str = "bulk",
         num_neighbors: int = 9,
     ) -> None:
         super().__init__()
@@ -52,8 +53,15 @@ class Patchcore(AnomalyModule):
             layers=layers,
             num_neighbors=num_neighbors,
         )
-        self.coreset_sampling_ratio = coreset_sampling_ratio
-        self.embeddings: List[Tensor] = []
+        if coreset_sampling_mode == "bulk":
+            coreset_sampling_class = KCenterGreedyBulk
+        elif coreset_sampling_mode == "online":
+            coreset_sampling_class = KCenterGreedyOnline
+        elif coreset_sampling_mode == "random":
+            coreset_sampling_class = KCenterGreedyRandom
+        else:
+            raise ValueError(f"unknown coreset subsampling mode: {coreset_sampling_mode}")
+        self.coreset_sampling = coreset_sampling_class(coreset_sampling_ratio)
 
     def configure_optimizers(self) -> None:
         """Configure optimizers.
@@ -80,18 +88,15 @@ class Patchcore(AnomalyModule):
         #   store the training set embedding. We manually append these
         #   values mainly due to the new order of hooks introduced after PL v1.4.0
         #   https://github.com/PyTorchLightning/pytorch-lightning/pull/7357
-        self.embeddings.append(embedding)
+        self.coreset_sampling.update(embedding)
 
     def on_validation_start(self) -> None:
         """Apply subsampling to the embedding collected from the training set."""
         # NOTE: Previous anomalib versions fit subsampling at the end of the epoch.
         #   This is not possible anymore with PyTorch Lightning v1.4.0 since validation
         #   is run within train epoch.
-        logger.info("Aggregating the embedding extracted from the training set.")
-        embeddings = torch.vstack(self.embeddings)
-
         logger.info("Applying core-set subsampling to get the embedding.")
-        self.model.subsample_embedding(embeddings, self.coreset_sampling_ratio)
+        self.model.memory_bank = self.coreset_sampling.get_coreset()
 
     def validation_step(self, batch, _):  # pylint: disable=arguments-differ
         """Get batch of anomaly maps from input image batch.
@@ -126,6 +131,7 @@ class PatchcoreLightning(Patchcore):
             layers=hparams.model.layers,
             pre_trained=hparams.model.pre_trained,
             coreset_sampling_ratio=hparams.model.coreset_sampling_ratio,
+            coreset_sampling_mode=hparams.model.coreset_sampling_mode,
             num_neighbors=hparams.model.num_neighbors,
         )
         self.hparams: Union[DictConfig, ListConfig]  # type: ignore
