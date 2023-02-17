@@ -11,7 +11,7 @@ from .feature_extractors import (
     TorchFXFeatureExtractor,
 )
 from .filters import GaussianBlur2d
-from .sampling import KCenterGreedyBulk, KCenterGreedyOnline, KCenterGreedyRandom
+from .sampling import KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
 from .stats import GaussianKDE, MultiVariateGaussian
 
 __all__ = [
@@ -22,7 +22,8 @@ __all__ = [
     "GaussianBlur2d",
     "KCenterGreedyBulk",
     "KCenterGreedyOnline",
-    "KCenterGreedyRandom",
+    "KCenterRandom",
+    "KCenterAll",
     "MultiVariateGaussian",
     "PCA",
     "SparseRandomProjection",

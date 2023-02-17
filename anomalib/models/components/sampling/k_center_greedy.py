@@ -14,7 +14,7 @@ from torch import Tensor
 from anomalib.models.components.dimensionality_reduction import SparseRandomProjection
 
 
-class KCenterGreedy(ABC):
+class KCenter(ABC):
     def __init__(self, sampling_ratio: float) -> None:
         self._embedding = []
         self.sampling_ratio = sampling_ratio
@@ -40,7 +40,7 @@ class KCenterGreedy(ABC):
         """Returns the coreset. Some implementations may calculate the coreset here."""
 
 
-class KCenterGreedyBulk(KCenterGreedy):
+class KCenterGreedyBulk(KCenter):
     """Implements k-center-greedy method.
 
     Args:
@@ -204,13 +204,17 @@ class KCenterGreedyOnline:  # intentionally no subclass of `KCenterGreedy` becau
         return torch.stack(self.coreset)
 
 
-class KCenterGreedyRandom(KCenterGreedy):
-    def __init__(self, sampling_ratio: float) -> None:
-        super().__init__(sampling_ratio)
-
+class KCenterRandom(KCenter):
     def get_coreset(self) -> Tensor:
         import numpy as np
 
         idxs = np.random.choice(self.embedding.shape[0], self.coreset_size, replace=False)
         coreset = self.embedding[idxs]
         return coreset
+
+class KCenterAll(KCenter):
+    def __init__(self, sampling_ratio):
+        super().__init__(sampling_ratio=1.0)
+
+    def get_coreset(self):
+        return self.embedding

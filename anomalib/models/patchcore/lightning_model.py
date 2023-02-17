@@ -14,7 +14,7 @@ from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from torch import Tensor
 
-from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterGreedyRandom
+from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
 from anomalib.models.patchcore.torch_model import PatchcoreModel
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,9 @@ class Patchcore(AnomalyModule):
         elif coreset_sampling_mode == "online":
             coreset_sampling_class = KCenterGreedyOnline
         elif coreset_sampling_mode == "random":
-            coreset_sampling_class = KCenterGreedyRandom
+            coreset_sampling_class = KCenterRandom
+        elif coreset_sampling_mode == "all":
+            coreset_sampling_class = KCenterAll
         else:
             raise ValueError(f"unknown coreset subsampling mode: {coreset_sampling_mode}")
         self.coreset_sampling = coreset_sampling_class(coreset_sampling_ratio)
