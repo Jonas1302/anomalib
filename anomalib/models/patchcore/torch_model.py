@@ -27,6 +27,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         backbone: str = "wide_resnet50_2",
         pre_trained: bool = True,
         num_neighbors: int = 9,
+        anomaly_map_with_neighbours: bool = False,
     ) -> None:
         super().__init__()
         self.tiler: Optional[Tiler] = None
@@ -35,6 +36,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.layers = layers
         self.input_size = input_size
         self.num_neighbors = num_neighbors
+        self.anomaly_map_with_neighbours = anomaly_map_with_neighbours
 
         self.feature_extractor = FeatureExtractor(backbone=self.backbone, pre_trained=pre_trained, layers=self.layers)
         self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1)
@@ -81,8 +83,13 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
             # reshape to batch dimension
             patch_scores = patch_scores.reshape((batch_size, -1))
             locations = locations.reshape((batch_size, -1))
-            # compute anomaly score
-            anomaly_score = self.compute_anomaly_score(patch_scores, locations, embedding)
+            if self.anomaly_map_with_neighbours:
+                # compute score for each pixel with its neighbours
+                patch_scores = self.compute_anomaly_score_map(patch_scores, locations, embedding)
+                anomaly_score, _ = patch_scores.max(dim=1)
+            else:
+                # compute anomaly score
+                anomaly_score = self.compute_anomaly_score(patch_scores, locations, embedding)
             # reshape to w, h
             patch_scores = patch_scores.reshape((batch_size, 1, width, height))
             # get anomaly map
@@ -163,12 +170,12 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
             return patch_scores.amax(1)
         batch_size, num_patches = patch_scores.shape
         # 1. Find the patch with the largest distance to it's nearest neighbor in each image
-        max_patches = torch.argmax(patch_scores, dim=1)  # indices of m^test,* in the paper
+        max_patches_idx = torch.argmax(patch_scores, dim=1)  # indices of m^test,* in the paper
         # m^test,* in the paper
-        max_patches_features = embedding.reshape(batch_size, num_patches, -1)[torch.arange(batch_size), max_patches]
+        max_patches_features = embedding.reshape(batch_size, num_patches, -1)[torch.arange(batch_size), max_patches_idx]
         # 2. Find the distance of the patch to it's nearest neighbor, and the location of the nn in the membank
-        score = patch_scores[torch.arange(batch_size), max_patches]  # s^* in the paper
-        nn_index = locations[torch.arange(batch_size), max_patches]  # indices of m^* in the paper
+        score = patch_scores[torch.arange(batch_size), max_patches_idx]  # s^* in the paper
+        nn_index = locations[torch.arange(batch_size), max_patches_idx]  # indices of m^* in the paper
         # 3. Find the support samples of the nearest neighbor in the membank
         nn_sample = self.memory_bank[nn_index, :]  # m^* in the paper
         # indices of N_b(m^*) in the paper
@@ -180,3 +187,23 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         # 6. Apply the weight factor to the score
         score = weights * score  # s in the paper
         return score
+
+    def compute_anomaly_score_map(self, patch_scores: Tensor, locations: Tensor, embedding: Tensor) -> Tensor:
+        # Don't need to compute weights if num_neighbors is 1
+        if self.num_neighbors == 1:
+            return patch_scores
+        batch_size, num_patches = patch_scores.shape
+        patch_scores = patch_scores.reshape(batch_size * num_patches, 1)  # s^* in the paper
+        # 2. Find the distance of the patch to it's nearest neighbor, and the location of the nn in the membank
+        locations = locations.reshape(batch_size * num_patches)  # indices of m^* in the paper
+        # 3. Find the support samples of the nearest neighbor in the membank
+        nn_sample = self.memory_bank[locations, :]  # m^* in the paper
+        # indices of N_b(m^*) in the paper
+        _, support_samples = self.nearest_neighbors(nn_sample, n_neighbors=self.num_neighbors)
+        # 4. Find the distance of the patch features to each of the support samples
+        distances = torch.cdist(embedding.unsqueeze(1), self.memory_bank[support_samples], p=2.0)
+        # 5. Apply softmax to find the weights
+        weights = (1 - F.softmax(distances.squeeze(1), 1))[..., 0]
+        # 6. Apply the weight factor to the scores
+        scores = weights * patch_scores.squeeze(1)  # s in the paper
+        return scores.reshape(batch_size, num_patches)
