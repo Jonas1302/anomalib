@@ -44,6 +44,7 @@ class Patchcore(AnomalyModule):
         coreset_sampling_mode: str = "bulk",
         num_neighbors: int = 9,
         anomaly_map_with_neighbours: bool = False,
+        locally_aware_patch_features: bool = True,
     ) -> None:
         super().__init__()
 
@@ -54,6 +55,7 @@ class Patchcore(AnomalyModule):
             layers=layers,
             num_neighbors=num_neighbors,
             anomaly_map_with_neighbours=anomaly_map_with_neighbours,
+            locally_aware_patch_features=locally_aware_patch_features,
         )
         if coreset_sampling_mode == "bulk":
             coreset_sampling_class = KCenterGreedyBulk
@@ -138,6 +140,7 @@ class PatchcoreLightning(Patchcore):
             coreset_sampling_mode=hparams.model.get("coreset_sampling_mode", "bulk"),
             num_neighbors=hparams.model.num_neighbors,
             anomaly_map_with_neighbours=hparams.model.get("anomaly_map_with_neighbours", False),
+            locally_aware_patch_features=hparams.model.get("locally_aware_patch_features", True),
         )
         self.hparams: Union[DictConfig, ListConfig]  # type: ignore
         self.save_hyperparameters(hparams)

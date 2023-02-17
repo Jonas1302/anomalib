@@ -26,6 +26,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         pre_trained: bool = True,
         num_neighbors: int = 9,
         anomaly_map_with_neighbours: bool = False,
+        locally_aware_patch_features: bool = True,
     ) -> None:
         super().__init__()
         self.tiler: Optional[Tiler] = None
@@ -37,7 +38,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.anomaly_map_with_neighbours = anomaly_map_with_neighbours
 
         self.feature_extractor = get_feature_extractor(self.backbone, pre_trained=pre_trained, layers=self.layers)
-        self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1)
+        self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1) if locally_aware_patch_features else torch.nn.Identity()
         self.anomaly_map_generator = AnomalyMapGenerator(input_size=input_size)
 
         self.register_buffer("memory_bank", Tensor())
