@@ -44,6 +44,7 @@ def get_datamodule(config: Union[DictConfig, ListConfig]) -> LightningDataModule
             transform_config_train=config.dataset.transform_config.train,
             transform_config_val=config.dataset.transform_config.val,
             create_validation_set=config.dataset.create_validation_set,
+            custom_mapping=config.dataset.get("custom_mapping", None),
         )
     elif config.dataset.format.lower() == "btech":
         datamodule = BTech(

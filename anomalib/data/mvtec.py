@@ -38,6 +38,7 @@ import albumentations as A
 import cv2
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf, DictConfig
 from pandas.core.frame import DataFrame
 from pytorch_lightning.core.datamodule import LightningDataModule
 from pytorch_lightning.utilities.cli import DATAMODULE_REGISTRY
@@ -64,6 +65,8 @@ def make_mvtec_dataset(
     split_ratio: float = 0.1,
     seed: Optional[int] = None,
     create_validation_set: bool = False,
+    custom_mapping: Optional[DictConfig] = None,
+    category: str = None,
 ) -> DataFrame:
     """Create MVTec AD samples by parsing the MVTec AD data file structure.
 
@@ -110,7 +113,7 @@ def make_mvtec_dataset(
     Returns:
         DataFrame: an output dataframe containing samples for the requested split (ie., train or test)
     """
-    samples_list = [(str(path),) + filename.parts[-3:] for filename in path.glob("**/*.png")]
+    samples_list = sorted([(str(path),) + filename.parts[-3:] for filename in path.glob("**/*.png")])
     if len(samples_list) == 0:
         raise RuntimeError(f"Found 0 images in {path}")
 
@@ -142,6 +145,27 @@ def make_mvtec_dataset(
     # Create label index for normal (0) and anomalous (1) images.
     samples.loc[(samples.label == "good"), "label_index"] = 0
     samples.loc[(samples.label != "good"), "label_index"] = 1
+
+    if custom_mapping:  # apply custom changes to the dataset
+        if "good" not in custom_mapping.normal_labels[category]:
+            # discard all good training images
+            samples = samples[(samples.split != "train") | (samples.label != "good")]
+            # mark the remaining test images as anomalous
+            samples.loc[samples.label == "good", "label_index"] = 1
+        for label in custom_mapping.normal_labels[category]:
+            if label == "good":
+                continue
+            if not samples.label.isin([label]).any():
+                raise Exception(f"given label '{label}' is not in the dataset for the category '{category}'")
+            indices = (samples.label == label)
+            # note: changing `samples.label_index` seems to be enough, `samples.label` isn't used anywhere below
+            samples.label_index[indices] = 0
+            samples.mask_path[indices] = ""
+            num_training_samples = int(len(samples.label[indices]) * custom_mapping.train_ratio_for_anomalies)
+            samples_labeled_splits = samples.split[indices]
+            samples_labeled_splits[:num_training_samples] = "train"
+            samples.split[indices] = samples_labeled_splits
+
     samples.label_index = samples.label_index.astype(int)
 
     if create_validation_set:
@@ -167,6 +191,7 @@ class MVTecDataset(VisionDataset):
         task: str = "segmentation",
         seed: Optional[int] = None,
         create_validation_set: bool = False,
+        custom_mapping: Optional[DictConfig] = None,
     ) -> None:
         """Mvtec AD Dataset class.
 
@@ -218,6 +243,8 @@ class MVTecDataset(VisionDataset):
                 " This will lead to inconsistency between runs."
             )
 
+        assert (not custom_mapping) or "good" in custom_mapping.normal_labels or task == "classification", \
+            "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
         self.root = Path(root) if isinstance(root, str) else root
         self.category: str = category
         self.split = split
@@ -230,6 +257,8 @@ class MVTecDataset(VisionDataset):
             split=self.split,
             seed=seed,
             create_validation_set=create_validation_set,
+            custom_mapping=custom_mapping,
+            category = category,
         )
 
     def __len__(self) -> int:
@@ -297,6 +326,7 @@ class MVTec(LightningDataModule):
         transform_config_val: Optional[Union[str, A.Compose]] = None,
         seed: Optional[int] = None,
         create_validation_set: bool = False,
+        custom_mapping: Optional[Union[Path, str, DictConfig]] = None,
     ) -> None:
         """Mvtec AD Lightning Data Module.
 
@@ -347,6 +377,7 @@ class MVTec(LightningDataModule):
         self.transform_config_train = transform_config_train
         self.transform_config_val = transform_config_val
         self.image_size = image_size
+        self.custom_mapping = OmegaConf.load(custom_mapping) if isinstance(custom_mapping, (Path, str)) else custom_mapping
 
         if self.transform_config_train is not None and self.transform_config_val is None:
             self.transform_config_val = self.transform_config_train
@@ -412,6 +443,7 @@ class MVTec(LightningDataModule):
                 task=self.task,
                 seed=self.seed,
                 create_validation_set=self.create_validation_set,
+                custom_mapping=self.custom_mapping,
             )
 
         if self.create_validation_set:
@@ -423,6 +455,7 @@ class MVTec(LightningDataModule):
                 task=self.task,
                 seed=self.seed,
                 create_validation_set=self.create_validation_set,
+                custom_mapping=self.custom_mapping,
             )
 
         self.test_data = MVTecDataset(
@@ -433,6 +466,7 @@ class MVTec(LightningDataModule):
             task=self.task,
             seed=self.seed,
             create_validation_set=self.create_validation_set,
+            custom_mapping=self.custom_mapping,
         )
 
         if stage == "predict":
