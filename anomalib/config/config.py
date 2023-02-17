@@ -115,6 +115,7 @@ def get_configurable_parameters(
     weight_file: Optional[str] = None,
     config_filename: Optional[str] = "config",
     config_file_extension: Optional[str] = "yaml",
+    category_overwrite=None,
 ) -> Union[DictConfig, ListConfig]:
     """Get configurable parameters.
 
@@ -162,7 +163,8 @@ def get_configurable_parameters(
 
     # add category subfolder if needed
     if config.dataset.format.lower() in ("btech", "mvtec"):
-        project_path = project_path / config.dataset.category
+        category = category_overwrite if category_overwrite else config.dataset.category
+        project_path = project_path / category
 
     # set to False by default for backward compatibility
     config.project.setdefault("unique_dir", False)
