@@ -254,8 +254,8 @@ class LabeledPatchcore(PatchcoreModel):
         normal_embedding = embedding[~anomalous_indices, :]
         return normal_embedding, anomalous_embedding
 
-    def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None) \
-            -> Optional[Tuple[Tensor, Tensor]]:
+    def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None, \
+                get_anomaly_patch_map: bool = False) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
         embeddings = self.get_embedding(input_tensor)
         batch_size, _, width, height = embeddings.shape
 
@@ -275,19 +275,22 @@ class LabeledPatchcore(PatchcoreModel):
             results = []
             for i in range(batch_size):
                 embedding = self.reshape_embedding(embeddings[i].unsqueeze(0))
-                results.append(self._forward_single(embedding, width, height))
+                results.append(self._forward_single(embedding, width, height, get_anomaly_patch_map))
 
             return tuple(map(torch.cat, zip(*results)))
 
-    def _forward_single(self, embedding: Tensor, width: int, height: int) -> Tuple[Tensor, Tensor]:
+    def _forward_single(self, embedding: Tensor, width: int, height: int, get_anomaly_patch_map: bool) \
+            -> Tuple[Tensor, Tensor, Tensor]:
         """Forwards an embedding with batch size 1.
 
         Args:
             embedding (Tensor): embedding with batch size 1
             width, height: number of patches per row and column
+            get_patch_anomaly_map: whether to also return the unscaled version of the anomaly map
         Returns:
-            Tuple[Tensor, Tensor]: anomaly maps (one per label) and anomaly score (one per label) as normalized score
-                in [0, 1] for the predicted label and zero for all others; both with batch-size 1
+            Tuple[Tensor, Tensor, Tensor]: anomaly maps (one per label), anomaly score (one per label) as normalized
+                score in [0, 1] for the predicted label and zero for all others and the unscaled anomaly map with one
+                entry per patch; all with batch-size 1
         """
         closest_results: Dict[int, Tensor] = {}
         index_to_label: List[int] = []
@@ -332,8 +335,11 @@ class LabeledPatchcore(PatchcoreModel):
         for l in self.labels:
             anomaly_score[0, l] = anomaly_maps[l].max() if l != 0 else anomaly_maps[0].min()
 
-        anomaly_maps = self.anomaly_map_generator(anomaly_maps).permute(1, 0, 2, 3)
-        return anomaly_maps.to(device), anomaly_score.to(device)
+        resized_anomaly_maps = self.anomaly_map_generator(anomaly_maps).permute(1, 0, 2, 3)
+        if get_anomaly_patch_map:
+            anomaly_maps = anomaly_maps.permute(1, 0, 2, 3)
+            return resized_anomaly_maps.to(device), anomaly_score.to(device), anomaly_maps.to(device)
+        return resized_anomaly_maps.to(device), anomaly_score.to(device)
 
     @staticmethod
     def _get_anomaly_map(reference_map: Tensor, anomaly_map: Tensor) -> Tensor:

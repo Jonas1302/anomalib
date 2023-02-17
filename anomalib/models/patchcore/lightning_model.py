@@ -141,24 +141,30 @@ class ClassificationPatchcore(Patchcore):
         Return:
             Predicted output
         """
-        outputs = self.validation_step(batch, batch_idx)
+        anomaly_maps, anomaly_score, anomaly_patch_maps = self.model(batch["image"], get_anomaly_patch_map=True)
+        outputs = batch
+        outputs["anomaly_maps"] = anomaly_maps
+        outputs["pred_scores"] = anomaly_score
         self._post_process(outputs)
 
         label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
         outputs["label_mapping"] = label_mapping
 
         if len(self.image_threshold.value.shape) > 0:
-            pred_masks = outputs["anomaly_maps"].permute(0, 2, 3, 1) > self.image_threshold.value
+            pred_masks = outputs["anomaly_maps"].permute(0, 2, 3, 1) >= self.image_threshold.value
             pred_masks = pred_masks.permute(0, 3, 1, 2)  # permute back to original shape
+            pred_patch_masks = anomaly_patch_maps.permute(0, 2, 3, 1) >= self.image_threshold.value
+            pred_patch_masks = pred_patch_masks.permute(0, 3, 1, 2)
         else:
-            pred_masks = outputs["anomaly_maps"] > self.image_threshold.value
+            pred_masks = outputs["anomaly_maps"] >= self.image_threshold.value
+            pred_patch_masks = anomaly_patch_maps >= self.image_threshold.value
         outputs["pred_masks"] = pred_masks
 
         pred_labels = []
         pred_scores_normed = outputs["pred_scores"] - self.image_threshold.value
         for i in range(len(pred_masks)):
             if self.most_common_anomaly_instead_of_highest_score:
-                bincount = torch.stack([pred_masks[i, j].sum() for j in range(len(pred_masks[i]))])
+                bincount = torch.stack([pred_patch_masks[i, j].sum() for j in range(len(pred_patch_masks[i]))])
                 if bincount[1:].any():  # any anomalous patches
                     label = bincount[1:].argmax().item() + 1
                 else:
