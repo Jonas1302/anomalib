@@ -182,9 +182,11 @@ class PreProcessor:
 
         self.transforms, self.normalization = get_transforms(config, image_size, to_tensor)
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, also_get_without_normalization=False, **kwargs):
         """Return transformed arguments."""
         result = self.transforms(*args, **kwargs)
+        if also_get_without_normalization:
+            return result, self.normalization(**result)
         if self.ignore_normalization:
-            return result, result
-        return result, self.normalization(**result)
+            return result
+        return self.normalization(**result)

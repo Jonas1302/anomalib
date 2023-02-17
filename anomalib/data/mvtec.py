@@ -171,6 +171,7 @@ def make_mvtec_dataset(
                 if class_label != "good":
                     continue
                 # discard all good training images
+                # (adding them to "test" would create an imbalance with other anomaly classes which have fewer images)
                 samples = samples[(samples.split != "train") | (samples.label != "good")]
                 # mark the remaining test images as anomalous
                 samples.loc[samples.label == "good", "label_index"] = 1
@@ -254,8 +255,10 @@ class MVTecDataset(VisionDataset):
                 " This will lead to inconsistency between runs."
             )
 
-        assert (not custom_mapping) or custom_mapping.custom_labels[category].get("good", "train") == "train" or task == "classification", \
-            "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
+        assert (not custom_mapping) \
+               or custom_mapping.custom_labels[category].get("good") != "anomaly" \
+               or task == "classification", \
+               "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
         self.root = Path(root) if isinstance(root, str) else root
         self.category: str = category
         self.split = split
@@ -291,7 +294,7 @@ class MVTecDataset(VisionDataset):
         image_path = self.samples.image_path[index]
         image = read_image(image_path)
 
-        pre_processed_no_normalization, pre_processed = self.pre_process(image=image)
+        pre_processed_no_normalization, pre_processed = self.pre_process(image=image, also_get_without_normalization=True)
         item = {
             "image": pre_processed["image"],
             "image_visualization": pre_processed_no_normalization["image"]
@@ -313,7 +316,7 @@ class MVTecDataset(VisionDataset):
                 else:
                     mask = cv2.imread(mask_path, flags=0) / 255.0
 
-                pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask)
+                pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
 
                 item["mask_path"] = mask_path
                 item["image"] = pre_processed["image"]
