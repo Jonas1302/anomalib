@@ -203,7 +203,6 @@ class MVTecDataset(VisionDataset):
         seed: Optional[int] = None,
         create_validation_set: bool = False,
         custom_mapping: Optional[DictConfig] = None,
-        pre_process_visualization: Optional[PreProcessor] = None,
     ) -> None:
         """Mvtec AD Dataset class.
 
@@ -263,7 +262,6 @@ class MVTecDataset(VisionDataset):
         self.task = task
 
         self.pre_process = pre_process
-        self.pre_process_visualization = pre_process_visualization
 
         self.samples = make_mvtec_dataset(
             path=self.root / category,
@@ -293,10 +291,11 @@ class MVTecDataset(VisionDataset):
         image_path = self.samples.image_path[index]
         image = read_image(image_path)
 
-        pre_processed = self.pre_process(image=image)
-        item = {"image": pre_processed["image"]}
-        if self.pre_process_visualization:  # add image for visualization without normalization
-            item["image_visualization"] = self.pre_process_visualization(image=image)["image"]
+        pre_processed_no_normalization, pre_processed = self.pre_process(image=image)
+        item = {
+            "image": pre_processed["image"],
+            "image_visualization": pre_processed_no_normalization["image"]
+        }
 
         if self.split in ["val", "test"]:
             label_index = self.samples.label_index[index]
@@ -314,10 +313,11 @@ class MVTecDataset(VisionDataset):
                 else:
                     mask = cv2.imread(mask_path, flags=0) / 255.0
 
-                pre_processed = self.pre_process(image=image, mask=mask)
+                pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask)
 
                 item["mask_path"] = mask_path
                 item["image"] = pre_processed["image"]
+                item["image_visualization"] = pre_processed_no_normalization["image"]
                 item["mask"] = pre_processed["mask"]
 
         return item
@@ -399,7 +399,6 @@ class MVTec(LightningDataModule):
 
         self.pre_process_train = PreProcessor(config=self.transform_config_train, image_size=self.image_size)
         self.pre_process_val = PreProcessor(config=self.transform_config_val, image_size=self.image_size)
-        self.pre_process_val_visualization = PreProcessor(config=self.transform_config_val, image_size=self.image_size, to_tensor=False, ignore_normalization=True)
 
         self.train_batch_size = train_batch_size
         self.test_batch_size = test_batch_size
@@ -472,7 +471,6 @@ class MVTec(LightningDataModule):
                 seed=self.seed,
                 create_validation_set=self.create_validation_set,
                 custom_mapping=self.custom_mapping,
-                pre_process_visualization=self.pre_process_val_visualization,
             )
 
         self.test_data = MVTecDataset(
@@ -484,7 +482,6 @@ class MVTec(LightningDataModule):
             seed=self.seed,
             create_validation_set=self.create_validation_set,
             custom_mapping=self.custom_mapping,
-            pre_process_visualization=self.pre_process_val_visualization,
         )
 
         if stage == "predict":
