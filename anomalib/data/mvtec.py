@@ -147,23 +147,35 @@ def make_mvtec_dataset(
     samples.loc[(samples.label != "good"), "label_index"] = 1
 
     if custom_mapping:  # apply custom changes to the dataset
-        if "good" not in custom_mapping.normal_labels[category]:
-            # discard all good training images
-            samples = samples[(samples.split != "train") | (samples.label != "good")]
-            # mark the remaining test images as anomalous
-            samples.loc[samples.label == "good", "label_index"] = 1
-        for label in custom_mapping.normal_labels[category]:
-            if label == "good":
-                continue
-            assert samples.label.isin([label]).any(), f"category '{category}' does not contain given label '{label}'"
-            indices = (samples.label == label)
-            # note: changing `samples.label_index` seems to be enough, `samples.label` isn't used anywhere below
-            samples.loc[indices, "label_index"] = 0
-            samples.loc[indices, "mask_path"] = ""
-            num_training_samples = int(len(samples.label[indices]) * custom_mapping.train_ratio_for_anomalies)
-            samples_labeled_splits = samples.split[indices]
-            samples_labeled_splits[:num_training_samples] = "train"
-            samples.loc[indices, "split"] = samples_labeled_splits
+        for class_label, class_mode in custom_mapping.custom_labels[category].items():
+            assert samples.label.isin([class_label]).any(), f"category '{category}' does not contain given label '{class_label}'"
+            if class_mode == "ignore":
+                samples = samples[samples.label != class_label]
+            elif class_mode == "train":
+                if class_label == "good":
+                    continue
+                indices = (samples.label == class_label)
+                # note: changing `samples.label_index` seems to be enough, `samples.label` isn't used anywhere below
+                samples.loc[indices, "label_index"] = 0
+                samples.loc[indices, "mask_path"] = ""
+                num_training_samples = int(len(samples.label[indices]) * custom_mapping.train_ratio_for_anomalies)
+                samples_labeled_splits = samples.split[indices]
+                """
+                # add samples everywhere # TODO: remove, only for debugging
+                samples_labeled_splits[:num_training_samples] = split #"train"
+                """
+                samples_labeled_splits[:num_training_samples] = "train"
+                #"""
+                samples.loc[indices, "split"] = samples_labeled_splits
+            elif class_mode == "test":
+                if class_label != "good":
+                    continue
+                # discard all good training images
+                samples = samples[(samples.split != "train") | (samples.label != "good")]
+                # mark the remaining test images as anomalous
+                samples.loc[samples.label == "good", "label_index"] = 1
+            else:
+                raise Exception(f"unknown mode {class_mode} (must be either 'train', 'test' or 'ignore'")
 
     samples.label_index = samples.label_index.astype(int)
 
@@ -242,7 +254,7 @@ class MVTecDataset(VisionDataset):
                 " This will lead to inconsistency between runs."
             )
 
-        assert (not custom_mapping) or "good" in custom_mapping.normal_labels or task == "classification", \
+        assert (not custom_mapping) or custom_mapping.custom_labels[category].get("good", "train") == "train" or task == "classification", \
             "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
         self.root = Path(root) if isinstance(root, str) else root
         self.category: str = category
