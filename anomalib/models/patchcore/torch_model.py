@@ -45,7 +45,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.register_buffer("memory_bank", Tensor())
         self.memory_bank: Tensor
 
-    def forward(self, input_tensor: Tensor) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    def forward(self, input_tensor: Tensor, return_original_embedding=False) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """Return Embedding during training, or a tuple of anomaly map and anomaly score during testing.
 
         Steps performed:
@@ -71,6 +71,9 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
 
         if self.tiler:
             embedding = self.tiler.untile(embedding)
+
+        if return_original_embedding:
+            return embedding
 
         batch_size, _, width, height = embedding.shape
         embedding = self.reshape_embedding(embedding)
