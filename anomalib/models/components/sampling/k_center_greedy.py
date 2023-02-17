@@ -16,7 +16,7 @@ from anomalib.models.components.dimensionality_reduction import SparseRandomProj
 
 class KCenter(ABC):
     def __init__(self, sampling_ratio: float) -> None:
-        self._embedding = []
+        self._embedding: List[Tensor] = []
         self.sampling_ratio = sampling_ratio
         self.model = SparseRandomProjection(eps=0.9)
 
@@ -28,7 +28,15 @@ class KCenter(ABC):
         if len(self._embedding) == 0:
             raise Exception("no embeddings added")
         if len(self._embedding) > 1:
-            self._embedding = [torch.cat(self._embedding)]
+            try:
+                self._embedding = [torch.cat(self._embedding)]
+            except RuntimeError:
+                # RuntimeError may occur if CUDA runs out of memory
+                # we therefore try the operation again but on the CPU
+                device = self._embedding[0].device
+                result = torch.cat(tuple(map(Tensor.cpu, self._embedding)))
+                del self._embedding  # release CUDA memory
+                self._embedding = [result.to(device)]
         return self._embedding[0]
 
     @property
@@ -208,8 +216,8 @@ class KCenterRandom(KCenter):
     def get_coreset(self) -> Tensor:
         import numpy as np
 
-        idxs = np.random.choice(self.embedding.shape[0], self.coreset_size, replace=False)
-        coreset = self.embedding[idxs]
+        indices = np.random.choice(self.embedding.shape[0], self.coreset_size, replace=False)
+        coreset = self.embedding[indices]
         return coreset
 
 class KCenterAll(KCenter):
