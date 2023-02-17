@@ -17,6 +17,10 @@ from .plotting_utils import plot_figure
 class AUROC(ROC):
     """Area under the ROC curve."""
 
+    def __init__(self, *args, average: str = "none", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.average = average
+
     def compute(self) -> Tensor:
         """First compute ROC curve, then compute area under the curve.
 
@@ -28,9 +32,10 @@ class AUROC(ROC):
 
         fpr, tpr = self._compute()
         # TODO: use stable sort after upgrading to pytorch 1.9.x (https://github.com/openvinotoolkit/anomalib/issues/92)
-        if not (torch.all(fpr.diff() <= 0) or torch.all(fpr.diff() >= 0)):
-            return auc(fpr, tpr, reorder=True)  # only reorder if fpr is not increasing or decreasing
-        return auc(fpr, tpr)
+        # only reorder if fpr is not increasing or decreasing
+        aucs = torch.tensor([auc(fpr, tpr, reorder=(torch.all(fpr.diff() <= 0) or torch.all(fpr.diff() >= 0)))
+                             for fpr, tpr in zip(fpr, tpr)])
+        return aucs if self.average in [None, "none"] else aucs.mean()
 
     def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
         """Update state with new values.
@@ -41,7 +46,7 @@ class AUROC(ROC):
             preds (Tensor): predictions of the model
             target (Tensor): ground truth targets
         """
-        super().update(preds.flatten(), target.flatten())
+        super().update(preds, target)
 
     def _compute(self) -> Tuple[Tensor, Tensor]:
         """Compute fpr/tpr value pairs.

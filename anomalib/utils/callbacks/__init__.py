@@ -95,7 +95,7 @@ def get_callbacks(config: Union[ListConfig, DictConfig]) -> List[Callback]:
     )
     callbacks.append(metrics_callback)
 
-    if "normalization_method" in config.model.keys() and not config.model.normalization_method == "none":
+    if "normalization_method" in config.model.keys() and not config.model.normalization_method in [None, "none"]:
         if config.model.normalization_method == "cdf":
             if config.model.name in ["padim", "stfpm"]:
                 if "nncf" in config.optimization and config.optimization.nncf.apply:

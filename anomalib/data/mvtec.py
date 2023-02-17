@@ -295,6 +295,7 @@ class MVTecDataset(VisionDataset):
             category=category,
             binary_label_indices=(task != "classification"),
         )
+        self.num_classes = len(self.label_mapping)
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -437,6 +438,7 @@ class MVTec(LightningDataModule):
         if create_validation_set:
             self.val_data: Dataset
         self.inference_data: Dataset
+        self.num_classes: int
 
     def prepare_data(self) -> None:
         """Download the dataset if not available."""
@@ -507,6 +509,8 @@ class MVTec(LightningDataModule):
             create_validation_set=self.create_validation_set,
             custom_mapping=self.custom_mapping,
         )
+
+        self.num_classes = self.test_data.num_classes
 
         if stage == "predict":
             self.inference_data = InferenceDataset(

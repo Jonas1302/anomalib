@@ -23,7 +23,8 @@ from .pro import PRO
 __all__ = ["AUROC", "AUPR", "AUPRO", "OptimalF1", "AnomalyScoreThreshold", "AnomalyScoreDistribution", "MinMax", "PRO"]
 
 
-def metric_collection_from_names(metric_names: List[str], prefix: Optional[str]) -> AnomalibMetricCollection:
+def metric_collection_from_names(metric_names: List[str], prefix: Optional[str] = None, postfix: Optional[str] = None,
+                                 average: str = "micro", num_classes: Optional[int] = None) -> AnomalibMetricCollection:
     """Create a metric collection from a list of metric names.
 
     The function will first try to retrieve the metric from the metrics defined in Anomalib metrics module,
@@ -32,20 +33,21 @@ def metric_collection_from_names(metric_names: List[str], prefix: Optional[str])
     Args:
         metric_names (List[str]): List of metric names to be included in the collection.
         prefix (Optional[str]): prefix to assign to the metrics in the collection.
+        postfix (Optional[str]): postfix to assign to the metrics in the collection
 
     Returns:
         AnomalibMetricCollection: Collection of metrics.
     """
     metrics_module = importlib.import_module("anomalib.utils.metrics")
-    metrics = AnomalibMetricCollection([], prefix=prefix)
+    metrics = AnomalibMetricCollection([], prefix=prefix, postfix=postfix)
     for metric_name in metric_names:
         if hasattr(metrics_module, metric_name):
             metric_cls = getattr(metrics_module, metric_name)
-            metrics.add_metrics(metric_cls())
+            metrics.add_metrics(metric_cls(average=average, num_classes=num_classes))
         elif hasattr(torchmetrics, metric_name):
             try:
                 metric_cls = getattr(torchmetrics, metric_name)
-                metrics.add_metrics(metric_cls())
+                metrics.add_metrics(metric_cls(average=average, num_classes=num_classes))
             except TypeError:
                 warnings.warn(f"Incorrect constructor arguments for {metric_name} metric from TorchMetrics package.")
         else:
@@ -143,7 +145,7 @@ def metric_collection_from_dicts(metrics: Dict[str, Dict[str, Any]], prefix: Opt
 
 
 def create_metric_collection(
-    metrics: Union[List[str], Dict[str, Dict[str, Any]]], prefix: Optional[str]
+    metrics: Union[List[str], Dict[str, Dict[str, Any]]], prefix: Optional[str], num_classes: Optional[int] = None
 ) -> AnomalibMetricCollection:
     """Create a metric collection from a list of metric names or dictionaries.
 
@@ -158,6 +160,7 @@ def create_metric_collection(
     Args:
         metrics (Union[List[str], Dict[str, Dict[str, Any]]]).
         prefix (Optional[str]): prefix to assign to the metrics in the collection.
+        num_classes (Optional[int]): number of different classes (anomalous + normal), required for classification
 
     Returns:
         AnomalibMetricCollection: Collection of metrics.
@@ -166,7 +169,17 @@ def create_metric_collection(
 
     if isinstance(metrics, (ListConfig, list)):
         assert all(isinstance(metric, str) for metric in metrics), f"All metrics must be strings, found {metrics}"
-        return metric_collection_from_names(metrics, prefix)
+        if num_classes:
+            return AnomalibMetricCollection(
+                [
+                    # returns once the average of each metric and once on a per-class basis
+                    metric_collection_from_names(metrics, postfix="_average", average="macro", num_classes=num_classes),
+                    metric_collection_from_names(metrics, postfix="_per-class", average="none", num_classes=num_classes),
+                ],
+                prefix=prefix,
+            )
+        else:
+            return metric_collection_from_names(metrics, prefix=prefix)
 
     if isinstance(metrics, (DictConfig, dict)):
         _validate_metrics_dict(metrics)

@@ -71,6 +71,6 @@ class PostProcessingConfigurationCallback(Callback):
         """
         if isinstance(pl_module, AnomalyModule):
             pl_module.threshold_method = self.threshold_method
-            if pl_module.threshold_method == ThresholdMethod.MANUAL:
+            if pl_module.image_threshold and pl_module.threshold_method == ThresholdMethod.MANUAL:
                 pl_module.image_threshold.value = torch.tensor(self.manual_image_threshold).cpu()
                 pl_module.pixel_threshold.value = torch.tensor(self.manual_pixel_threshold).cpu()
