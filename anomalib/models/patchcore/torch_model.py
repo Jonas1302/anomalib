@@ -36,9 +36,10 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.input_size = input_size
         self.num_neighbors = num_neighbors
         self.anomaly_map_with_neighbours = anomaly_map_with_neighbours
+        self.locally_aware_patch_features = locally_aware_patch_features
 
         self.feature_extractor = get_feature_extractor(self.backbone, pre_trained=pre_trained, layers=self.layers)
-        self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1) if locally_aware_patch_features else torch.nn.Identity()
+        self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1)
         self.anomaly_map_generator = AnomalyMapGenerator(input_size=input_size)
 
         self.register_buffer("memory_bank", Tensor())
@@ -65,7 +66,11 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         with torch.no_grad():
             features = self.feature_extractor(input_tensor)
 
-        features = {layer: self.feature_pooler(feature) for layer, feature in features.items()}
+        if self.locally_aware_patch_features in [True, "true"]:
+            features = {layer: self.feature_pooler(feature) for layer, feature in features.items()}
+        elif self.locally_aware_patch_features == "both":
+            features = {layer: torch.cat((feature, self.feature_pooler(feature)), dim=1)
+                        for layer, feature in features.items()}
         embedding = self.generate_embedding(features)
 
         if self.tiler:
