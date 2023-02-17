@@ -68,7 +68,7 @@ def make_mvtec_dataset(
     custom_mapping: Optional[DictConfig] = None,
     category: str = None,
     binary_label_indices: bool = True,
-) -> DataFrame:
+) -> Tuple[DataFrame, Dict[int, str]]:
     """Create MVTec AD samples by parsing the MVTec AD data file structure.
 
     The files are expected to follow the structure:
@@ -152,6 +152,8 @@ def make_mvtec_dataset(
         # Create label index for normal (0) and anomalous (1) images.
         samples.loc[(samples.label == "good"), "label_index"] = 0
         samples.loc[(samples.label != "good"), "label_index"] = 1
+        label_mapping = {0: "normal", 1: "anomalous"}
+
         if custom_mapping:  # apply custom changes to the dataset
             for class_label, class_mode in custom_mapping.custom_labels[category].items():
                 assert samples.label.isin([class_label]).any(), f"category '{category}' does not contain given label '{class_label}'"
@@ -170,14 +172,18 @@ def make_mvtec_dataset(
                 else:
                     raise Exception(f"unknown mode {class_mode} (must be either 'train', 'test' or 'ignore'")
     else:
-        samples.loc[(samples.label == "good"), "label_index"] = 0
+        label_mapping = {}
         i = 1
         for label in set(samples.label):
             if custom_mapping.custom_labels[category].get(label) == "ignore":
                 samples = samples[samples.label != label]
-            elif label != "good":
+            elif label == "good":
+                samples.loc[(samples.label == "good"), "label_index"] = 0
+                label_mapping = {0: "good", **label_mapping}  # always make good '0' and always keep it as first entry
+            else:
                 add_anomaly_to_train(samples, label, custom_mapping.train_ratio_for_anomalies if custom_mapping else 0.5)
                 samples.loc[(samples.label == label), "label_index"] = i
+                label_mapping[i] = label
                 i += 1
 
     samples.label_index = samples.label_index.astype(int)
@@ -190,7 +196,7 @@ def make_mvtec_dataset(
         samples = samples[samples.split == split]
         samples = samples.reset_index(drop=True)
 
-    return samples
+    return samples, label_mapping
 
 
 def add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
@@ -286,7 +292,7 @@ class MVTecDataset(VisionDataset):
 
         self.pre_process = pre_process
 
-        self.samples = make_mvtec_dataset(
+        self.samples, self.label_mapping = make_mvtec_dataset(
             path=self.root / category,
             split=self.split,
             seed=seed,
@@ -296,6 +302,8 @@ class MVTecDataset(VisionDataset):
             binary_label_indices=(task != "classification"),
         )
         self.num_classes = len(self.label_mapping)
+        if self.num_classes == 2:  # binary problem => only one class is sufficient
+            self.num_classes = 1
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -438,6 +446,7 @@ class MVTec(LightningDataModule):
         if create_validation_set:
             self.val_data: Dataset
         self.inference_data: Dataset
+        self.label_mapping: Dict[int, str]
         self.num_classes: int
 
     def prepare_data(self) -> None:
@@ -510,6 +519,7 @@ class MVTec(LightningDataModule):
             custom_mapping=self.custom_mapping,
         )
 
+        self.label_mapping = self.test_data.label_mapping
         self.num_classes = self.test_data.num_classes
 
         if stage == "predict":

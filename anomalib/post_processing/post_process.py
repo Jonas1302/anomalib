@@ -81,6 +81,11 @@ def add_anomalous_label(image: np.ndarray, confidence: Optional[float] = None):
     return add_label(image, "anomalous", (255, 100, 100), confidence)
 
 
+def add_class_label(image: np.ndarray, label: str, correct: bool):
+    """Adds the anomalous label to the image."""
+    return add_label(image, label, (225, 252, 134) if correct else (255, 100, 100))
+
+
 def anomaly_map_to_color_map(anomaly_map: np.ndarray, normalize: bool = True) -> np.ndarray:
     """Compute anomaly color heatmap.
 

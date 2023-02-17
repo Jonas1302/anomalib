@@ -82,8 +82,6 @@ class Patchcore(AnomalyModule):
             most_common_anomaly_instead_of_highest_score=most_common_anomaly_instead_of_highest_score,
         )
 
-        self.label_mapping: Dict[int, str] = {} if self.task == "classification" else None  # maps label index to name
-
     def configure_optimizers(self) -> None:
         """Configure optimizers.
 
@@ -102,8 +100,6 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, np.ndarray]: Embedding Vector
         """
-        for index, name in zip(batch["label"], batch["label_name"]):
-            self.label_mapping[index.item()] = name
         self.model(batch["image"], ground_truths=batch.get("mask"), labels=batch.get("label"))
 
     def on_validation_start(self) -> None:
@@ -125,11 +121,13 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, Any]: Image filenames, test images, GT and predicted label/masks
         """
+        label_mapping = self.trainer.datamodule.label_mapping
 
         anomaly_maps, anomaly_score = self.model(batch["image"])
         batch["anomaly_maps"] = anomaly_maps
         batch["pred_scores"] = anomaly_score
-        batch["pred_labels"] = [self.label_mapping[index.argmax().item()] for index in anomaly_score]
+        batch["pred_labels"] = [label_mapping[index.argmax().item()] for index in anomaly_score]
+        batch["label_mapping"] = label_mapping  # add for better visualization
 
         return batch
 
