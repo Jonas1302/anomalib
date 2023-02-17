@@ -12,6 +12,7 @@ import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage.segmentation import mark_boundaries
+from torch import Tensor
 
 from anomalib.data.utils import read_image
 from anomalib.post_processing.post_process import (
@@ -75,8 +76,16 @@ class Visualizer:
         """
         batch_size, _num_channels, height, width = batch["image"].size()
         for i in range(batch_size):
+            if "image_visualization" in batch:
+                image = batch["image_visualization"][i]
+                if isinstance(image, Tensor):
+                    image = image.cpu().numpy()
+            else:
+                # re-read because `batch["image"]` was normalized
+                image = read_image(path=batch["image_path"][i], image_size=(height, width))
+
             image_result = ImageResult(
-                image=read_image(path=batch["image_path"][i], image_size=(height, width)),
+                image=image,
                 pred_score=batch["pred_scores"][i].cpu().numpy().item(),
                 pred_label=batch["pred_labels"][i].cpu().numpy().item(),
                 anomaly_map=batch["anomaly_maps"][i].cpu().numpy() if "anomaly_maps" in batch else None,

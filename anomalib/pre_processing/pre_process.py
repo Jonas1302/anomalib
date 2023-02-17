@@ -22,6 +22,7 @@ def get_transforms(
     config: Optional[Union[str, A.Compose]] = None,
     image_size: Optional[Union[int, Tuple]] = None,
     to_tensor: bool = True,
+    ignore_normalization: bool = False,
 ) -> A.Compose:
     """Get transforms from config or image size.
 
@@ -30,6 +31,7 @@ def get_transforms(
             Either config or albumentations ``Compose`` object. Defaults to None.
         image_size (Optional[Union[int, Tuple]], optional): Image size to transform. Defaults to None.
         to_tensor (bool, optional): Boolean to convert the final transforms into Torch tensor. Defaults to True.
+        ignore_normalization (bool, optional): Boolean to ignore normalization of image values. Defaults to False.
 
     Raises:
         ValueError: When both ``config`` and ``image_size`` is ``None``.
@@ -105,6 +107,9 @@ def get_transforms(
         if isinstance(transforms[-1], ToTensorV2):
             transforms = A.Compose(transforms[:-1])
 
+    if ignore_normalization:
+        transforms = A.Compose([t for t in transforms if not isinstance(t, A.Normalize)])
+
     # always resize to specified image size
     if not any(isinstance(transform, A.Resize) for transform in transforms) and image_size is not None:
         height, width = get_image_height_and_width(image_size)
@@ -169,12 +174,13 @@ class PreProcessor:
         config: Optional[Union[str, A.Compose]] = None,
         image_size: Optional[Union[int, Tuple]] = None,
         to_tensor: bool = True,
+        ignore_normalization: bool = False,
     ) -> None:
         self.config = config
         self.image_size = image_size
         self.to_tensor = to_tensor
 
-        self.transforms = get_transforms(config, image_size, to_tensor)
+        self.transforms = get_transforms(config, image_size, to_tensor, ignore_normalization)
 
     def __call__(self, *args, **kwargs):
         """Return transformed arguments."""
