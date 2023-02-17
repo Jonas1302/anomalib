@@ -9,10 +9,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from anomalib.models.components import (
-    DynamicBufferModule,
-    FeatureExtractor,
-)
+from anomalib.models.components import DynamicBufferModule
+from anomalib.models.components.feature_extractors.timm import get_feature_extractor
 from anomalib.models.patchcore.anomaly_map import AnomalyMapGenerator
 from anomalib.pre_processing import Tiler
 
@@ -38,7 +36,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.num_neighbors = num_neighbors
         self.anomaly_map_with_neighbours = anomaly_map_with_neighbours
 
-        self.feature_extractor = FeatureExtractor(backbone=self.backbone, pre_trained=pre_trained, layers=self.layers)
+        self.feature_extractor = get_feature_extractor(self.backbone, pre_trained=pre_trained, layers=self.layers)
         self.feature_pooler = torch.nn.AvgPool2d(3, 1, 1)
         self.anomaly_map_generator = AnomalyMapGenerator(input_size=input_size)
 
@@ -113,9 +111,9 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
             Embedding vector
         """
 
-        embeddings = features[self.layers[0]]
+        embeddings = features[str(self.layers[0])]
         for layer in self.layers[1:]:
-            layer_embedding = features[layer]
+            layer_embedding = features[str(layer)]
             layer_embedding = F.interpolate(layer_embedding, size=embeddings.shape[-2:], mode="nearest")
             embeddings = torch.cat((embeddings, layer_embedding), 1)
 

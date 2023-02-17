@@ -7,6 +7,7 @@ This script extracts features from a CNN network
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
 import warnings
 from typing import Dict, List
 
@@ -15,6 +16,14 @@ import torch
 from torch import Tensor, nn
 
 logger = logging.getLogger(__name__)
+
+
+def get_feature_extractor(backbone: str, layers: List[str], pre_trained: bool = True):
+    if backbone.startswith("vit"):
+        cls = ViT
+    else:
+        cls = FeatureExtractor
+    return cls(backbone=backbone, layers=layers, pre_trained=pre_trained)
 
 
 class TimmFeatureExtractor(nn.Module):
@@ -114,3 +123,30 @@ class FeatureExtractor(TimmFeatureExtractor):
             " Both FeatureExtractor and TimmFeatureExtractor will be removed in version 2023.1"
         )
         super().__init__(*args, **kwargs)
+
+
+class ViT(nn.Module):
+    def __init__(self, backbone: str = "vit_base_patch16_224", *, layers: List[int], pre_trained=True):
+        super().__init__()
+
+        self.model = timm.create_model(backbone, pretrained=pre_trained)
+        self.model.eval()
+
+        # from https://discuss.pytorch.org/t/how-can-l-load-my-best-model-as-a-feature-extractor-evaluator/17254/6
+        self.activation = {}
+        def get_activation(name):
+            def hook(model, input_, output):
+                batch_size, num_patches, num_features = output.shape
+                width = height = int(math.sqrt(num_patches - 1))
+                assert width * height == num_patches - 1
+                self.activation[name] = output.detach()[:, 1:, :].permute(0, 2, 1).reshape(batch_size, num_features, width, height)
+            return hook
+
+        blocks = dict(dict(self.model.named_children())["blocks"].named_children())
+        for layer in layers:
+            blocks[str(layer)].register_forward_hook(get_activation(str(layer)))
+
+    def forward(self, in_tensor):
+        with torch.no_grad():
+            self.model(in_tensor)
+        return self.activation
