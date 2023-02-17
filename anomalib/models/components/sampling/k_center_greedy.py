@@ -20,6 +20,11 @@ class KCenter(ABC):
         self.sampling_ratio = sampling_ratio
         self.model = SparseRandomProjection(eps=0.9)
 
+    def __copy__(self):
+        copy = self.__class__(self.sampling_ratio)
+        copy.model = self.model
+        return copy
+
     def update(self, embedding: Tensor):
         self._embedding.append(embedding)
 
@@ -41,7 +46,9 @@ class KCenter(ABC):
 
     @property
     def coreset_size(self):
-        return int(self.embedding.shape[0] * self.sampling_ratio)
+        num_embeddings = self.embedding.shape[0]
+        t = 1000  # threshold: add all embeddings if num_embeddings is below threshold
+        return int(max(min(num_embeddings, t), num_embeddings * self.sampling_ratio))
 
     @abstractmethod
     def get_coreset(self):
@@ -112,7 +119,9 @@ class KCenterGreedyBulk(KCenter):
             selected_idxs = []
 
         if self.embedding.ndim == 2:
-            self.model.fit(self.embedding)
+            # train the reduction projection in the first run
+            if not hasattr(self.model, "sparse_random_matrix") or self.model.sparse_random_matrix is None:
+                self.model.fit(self.embedding)
             self.features = self.model.transform(self.embedding)
             self.reset_distances()
         else:
@@ -148,6 +157,8 @@ class KCenterGreedyBulk(KCenter):
             >>> coreset.shape
             torch.Size([219, 1536])
         """
+        if self.coreset_size == len(self.embedding):
+            return self.embedding
 
         idxs = self.select_coreset_idxs(selected_idxs)
         coreset = self.embedding[idxs]
@@ -221,7 +232,7 @@ class KCenterRandom(KCenter):
         return coreset
 
 class KCenterAll(KCenter):
-    def __init__(self, sampling_ratio):
+    def __init__(self, sampling_ratio=None):
         super().__init__(sampling_ratio=1.0)
 
     def get_coreset(self):

@@ -7,15 +7,13 @@ Paper https://arxiv.org/abs/2106.08265.
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Dict
 
-import torch
 from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
-from torch import Tensor
 
 from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
-from anomalib.models.patchcore.torch_model import PatchcoreModel
+from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +43,14 @@ class Patchcore(AnomalyModule):
         num_neighbors: int = 9,
         anomaly_map_with_neighbours: bool = False,
         locally_aware_patch_features: bool = True,
+        task: str = "segmentation",
+        labeled_coreset: bool = False,
+        anomaly_threshold: float = 0.1,
+        most_common_anomaly_instead_of_highest_score: bool = True,
     ) -> None:
         super().__init__()
+        self.task = task
 
-        self.model: PatchcoreModel = PatchcoreModel(
-            input_size=input_size,
-            backbone=backbone,
-            pre_trained=pre_trained,
-            layers=layers,
-            num_neighbors=num_neighbors,
-            anomaly_map_with_neighbours=anomaly_map_with_neighbours,
-            locally_aware_patch_features=locally_aware_patch_features,
-        )
         if coreset_sampling_mode == "bulk":
             coreset_sampling_class = KCenterGreedyBulk
         elif coreset_sampling_mode == "online":
@@ -67,7 +61,28 @@ class Patchcore(AnomalyModule):
             coreset_sampling_class = KCenterAll
         else:
             raise ValueError(f"unknown coreset subsampling mode: {coreset_sampling_mode}")
-        self.coreset_sampling = coreset_sampling_class(coreset_sampling_ratio)
+
+        if labeled_coreset:
+            patchcore_class = LabeledPatchcore
+            self.image_threshold = None
+            self.pixel_threshold = None
+        else:
+            patchcore_class = PatchcoreModel
+
+        self.model: PatchcoreModel = patchcore_class(
+            input_size=input_size,
+            backbone=backbone,
+            pre_trained=pre_trained,
+            layers=layers,
+            num_neighbors=num_neighbors,
+            anomaly_map_with_neighbours=anomaly_map_with_neighbours,
+            locally_aware_patch_features=locally_aware_patch_features,
+            coreset_sampling=coreset_sampling_class(coreset_sampling_ratio),
+            anomaly_threshold=anomaly_threshold,
+            most_common_anomaly_instead_of_highest_score=most_common_anomaly_instead_of_highest_score,
+        )
+
+        self.label_mapping: Dict[int, str] = {} if self.task == "classification" else None  # maps label index to name
 
     def configure_optimizers(self) -> None:
         """Configure optimizers.
@@ -87,14 +102,9 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, np.ndarray]: Embedding Vector
         """
-        self.model.feature_extractor.eval()
-        embedding = self.model(batch["image"])
-
-        # NOTE: `self.embedding` appends each batch embedding to
-        #   store the training set embedding. We manually append these
-        #   values mainly due to the new order of hooks introduced after PL v1.4.0
-        #   https://github.com/PyTorchLightning/pytorch-lightning/pull/7357
-        self.coreset_sampling.update(embedding)
+        for index, name in zip(batch["label"], batch["label_name"]):
+            self.label_mapping[index.item()] = name
+        self.model(batch["image"], ground_truths=batch.get("mask"), labels=batch.get("label"))
 
     def on_validation_start(self) -> None:
         """Apply subsampling to the embedding collected from the training set."""
@@ -102,7 +112,7 @@ class Patchcore(AnomalyModule):
         #   This is not possible anymore with PyTorch Lightning v1.4.0 since validation
         #   is run within train epoch.
         logger.info("Applying core-set subsampling to get the embedding.")
-        self.model.memory_bank = self.coreset_sampling.get_coreset()
+        self.model.calculate_coreset()
 
     def validation_step(self, batch, _):  # pylint: disable=arguments-differ
         """Get batch of anomaly maps from input image batch.
@@ -119,8 +129,14 @@ class Patchcore(AnomalyModule):
         anomaly_maps, anomaly_score = self.model(batch["image"])
         batch["anomaly_maps"] = anomaly_maps
         batch["pred_scores"] = anomaly_score
+        batch["pred_labels"] = [self.label_mapping[index.argmax().item()] for index in anomaly_score]
 
         return batch
+
+    def _compute_adaptive_threshold(self, outputs):
+        # only calculate threshold if not classifying
+        if self.task != "classification":
+            super()._compute_adaptive_threshold(outputs)
 
 
 class PatchcoreLightning(Patchcore):
@@ -141,6 +157,10 @@ class PatchcoreLightning(Patchcore):
             num_neighbors=hparams.model.num_neighbors,
             anomaly_map_with_neighbours=hparams.model.get("anomaly_map_with_neighbours", False),
             locally_aware_patch_features=hparams.model.get("locally_aware_patch_features", True),
+            task=hparams.dataset.get("task", "default"),
+            labeled_coreset=hparams.model.get("labeled_coreset", False),
+            anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
+            most_common_anomaly_instead_of_highest_score=hparams.model.get("most_common_anomaly_instead_of_highest_score", True),
         )
         self.hparams: Union[DictConfig, ListConfig]  # type: ignore
         self.save_hyperparameters(hparams)

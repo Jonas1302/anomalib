@@ -79,8 +79,9 @@ class AnomalyModule(pl.LightningModule, ABC):
         """
         outputs = self.validation_step(batch, batch_idx)
         self._post_process(outputs)
-        outputs["pred_labels"] = outputs["pred_scores"] >= self.image_threshold.value
-        if "anomaly_maps" in outputs.keys():
+        if self.image_threshold is not None and "pred_labels" not in outputs:
+            outputs["pred_labels"] = outputs["pred_scores"] >= self.image_threshold.value
+        if self.pixel_threshold is not None and "pred_masks" not in outputs and "anomaly_maps" in outputs:
             outputs["pred_masks"] = outputs["anomaly_maps"] >= self.pixel_threshold.value
             outputs["pred_masks_image_threshold"] = outputs["anomaly_maps"] >= self.image_threshold.value
         return outputs
