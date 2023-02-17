@@ -301,9 +301,7 @@ class MVTecDataset(VisionDataset):
             category=category,
             binary_label_indices=(task != "classification"),
         )
-        self.num_classes = len(self.label_mapping)
-        if self.num_classes == 2:  # binary problem => only one class is sufficient
-            self.num_classes = 1
+        self.num_classes = len(self.label_mapping) if self.task == "classification" else 1
 
     def __len__(self) -> int:
         """Get length of the dataset."""

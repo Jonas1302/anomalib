@@ -79,11 +79,9 @@ class AnomalyModule(pl.LightningModule, ABC):
         """
         outputs = self.validation_step(batch, batch_idx)
         self._post_process(outputs)
-        if self.image_threshold is not None and "pred_labels" not in outputs:
-            outputs["pred_labels"] = outputs["pred_scores"] >= self.image_threshold.value
-        if self.pixel_threshold is not None and "pred_masks" not in outputs and "anomaly_maps" in outputs:
-            outputs["pred_masks"] = outputs["anomaly_maps"] >= self.pixel_threshold.value
-            outputs["pred_masks_image_threshold"] = outputs["anomaly_maps"] >= self.image_threshold.value
+        outputs["pred_labels"] = outputs["pred_scores"] >= self.image_threshold.value
+        outputs["pred_masks"] = outputs["anomaly_maps"] >= self.pixel_threshold.value
+        outputs["pred_masks_image_threshold"] = outputs["anomaly_maps"] >= self.image_threshold.value
         return outputs
 
     def test_step(self, batch, _):  # pylint: disable=arguments-differ
@@ -132,8 +130,9 @@ class AnomalyModule(pl.LightningModule, ABC):
         self._log_metrics()
 
     def _compute_adaptive_threshold(self, outputs):
-        self.image_threshold.reset()
-        self.pixel_threshold.reset()
+        num_classes = self.trainer.datamodule.num_classes
+        self.image_threshold = AnomalyScoreThreshold(self.image_threshold.default_value, num_classes).cpu()
+        self.pixel_threshold = AnomalyScoreThreshold(self.pixel_threshold.default_value, num_classes).cpu()
         self._collect_outputs(self.image_threshold, self.pixel_threshold, outputs)
         self.image_threshold.compute()
         if "mask" in outputs[0].keys() and "anomaly_maps" in outputs[0].keys():
@@ -141,8 +140,8 @@ class AnomalyModule(pl.LightningModule, ABC):
         else:
             self.pixel_threshold.value = self.image_threshold.value
 
-        self.image_metrics.set_threshold(self.image_threshold.value.item())
-        self.pixel_metrics.set_threshold(self.pixel_threshold.value.item())
+        self.image_metrics.set_threshold(self.image_threshold.value)
+        self.pixel_metrics.set_threshold(self.pixel_threshold.value)
 
     @staticmethod
     def _collect_outputs(image_metric, pixel_metric, outputs):

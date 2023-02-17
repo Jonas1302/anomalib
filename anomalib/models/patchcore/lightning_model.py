@@ -7,8 +7,9 @@ Paper https://arxiv.org/abs/2106.08265.
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import List, Tuple, Union, Dict
+from typing import List, Tuple, Union, Dict, Any, Optional
 
+import torch
 from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 
@@ -62,12 +63,7 @@ class Patchcore(AnomalyModule):
         else:
             raise ValueError(f"unknown coreset subsampling mode: {coreset_sampling_mode}")
 
-        if labeled_coreset:
-            patchcore_class = LabeledPatchcore
-            self.image_threshold = None
-            self.pixel_threshold = None
-        else:
-            patchcore_class = PatchcoreModel
+        patchcore_class = LabeledPatchcore if labeled_coreset else PatchcoreModel
 
         self.model: PatchcoreModel = patchcore_class(
             input_size=input_size,
@@ -81,6 +77,7 @@ class Patchcore(AnomalyModule):
             anomaly_threshold=anomaly_threshold,
             most_common_anomaly_instead_of_highest_score=most_common_anomaly_instead_of_highest_score,
         )
+        self.most_common_anomaly_instead_of_highest_score = most_common_anomaly_instead_of_highest_score
 
     def configure_optimizers(self) -> None:
         """Configure optimizers.
@@ -121,31 +118,78 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, Any]: Image filenames, test images, GT and predicted label/masks
         """
-        label_mapping = self.trainer.datamodule.label_mapping
-
         anomaly_maps, anomaly_score = self.model(batch["image"])
         batch["anomaly_maps"] = anomaly_maps
         batch["pred_scores"] = anomaly_score
-        batch["pred_labels"] = [label_mapping[index.argmax().item()] for index in anomaly_score]
-        batch["label_mapping"] = label_mapping  # add for better visualization
 
         return batch
 
-    def _compute_adaptive_threshold(self, outputs):
-        # only calculate threshold if not classifying
-        if self.task != "classification":
-            super()._compute_adaptive_threshold(outputs)
+
+class ClassificationPatchcore(Patchcore):
+
+    def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None) -> Any:
+        """Step function called during :meth:`~pytorch_lightning.trainer.trainer.Trainer.predict`.
+
+        By default, it calls :meth:`~pytorch_lightning.core.lightning.LightningModule.forward`.
+        Override to add any processing logic.
+
+        Args:
+            batch (Tensor): Current batch
+            batch_idx (int): Index of current batch
+            _dataloader_idx (int): Index of the current dataloader
+
+        Return:
+            Predicted output
+        """
+        outputs = self.validation_step(batch, batch_idx)
+        self._post_process(outputs)
+
+        label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
+        outputs["label_mapping"] = label_mapping
+
+        if len(self.image_threshold.value.shape) > 0:
+            pred_masks = outputs["anomaly_maps"].permute(0, 2, 3, 1) > self.image_threshold.value
+            pred_masks = pred_masks.permute(0, 3, 1, 2)  # permute back to original shape
+        else:
+            pred_masks = outputs["anomaly_maps"] > self.image_threshold.value
+        outputs["pred_masks"] = pred_masks
+
+        pred_labels = []
+        pred_scores_normed = outputs["pred_scores"] - self.image_threshold.value
+        for i in range(len(pred_masks)):
+            if self.most_common_anomaly_instead_of_highest_score:
+                bincount = torch.stack([pred_masks[i, j].sum() for j in range(len(pred_masks[i]))])
+                if bincount[1:].any():  # any anomalous patches
+                    label = bincount[1:].argmax().item() + 1
+                else:
+                    label = 0
+            else:
+                if pred_scores_normed[i].max() < 0:  # all anomaly scores are below threshold => good
+                    label = 0
+                else:
+                    label = pred_scores_normed[i].argmax().item()
+            pred_labels.append(label_mapping[label])
+            outputs["pred_scores"][i, torch.arange(0, len(pred_masks[i])) != label] = 0  # set all to zero except label
+        outputs["pred_labels"] = pred_labels
+
+        return outputs
 
 
-class PatchcoreLightning(Patchcore):
+class PatchcoreLightning:
     """PatchcoreLightning Module to train PatchCore algorithm.
 
     Args:
         hparams (Union[DictConfig, ListConfig]): Model params
     """
+    def __new__(cls, hparams):
+        # this class is basically just a factory method disguised as class
+        # since it is woven into other complex parts of anomalib's code, I think it's easier
+        # to mangle with the object's construction
+        assert cls == PatchcoreLightning, "PatchcoreLightning cannot be subclassed (subclass would be ignored)"
 
-    def __init__(self, hparams) -> None:
-        super().__init__(
+        task = hparams.dataset.get("task", "segmentation")
+        cls2 = ClassificationPatchcore if task == "classification" else Patchcore
+        obj = cls2(
             input_size=hparams.model.input_size,
             backbone=hparams.model.backbone,
             layers=hparams.model.layers,
@@ -155,10 +199,11 @@ class PatchcoreLightning(Patchcore):
             num_neighbors=hparams.model.num_neighbors,
             anomaly_map_with_neighbours=hparams.model.get("anomaly_map_with_neighbours", False),
             locally_aware_patch_features=hparams.model.get("locally_aware_patch_features", True),
-            task=hparams.dataset.get("task", "default"),
+            task=hparams.dataset.get("task", "segmentation"),
             labeled_coreset=hparams.model.get("labeled_coreset", False),
             anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
             most_common_anomaly_instead_of_highest_score=hparams.model.get("most_common_anomaly_instead_of_highest_score", True),
         )
-        self.hparams: Union[DictConfig, ListConfig]  # type: ignore
-        self.save_hyperparameters(hparams)
+        obj.save_hyperparameters(hparams)
+
+        return obj

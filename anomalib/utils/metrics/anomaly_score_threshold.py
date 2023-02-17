@@ -1,4 +1,5 @@
 """Implementation of AnomalyScoreThreshold based on TorchMetrics."""
+from typing import List
 
 # Copyright (C) 2022 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
@@ -19,11 +20,12 @@ class AnomalyScoreThreshold(PrecisionRecallCurve):
     adaptive threshold value.
     """
 
-    def __init__(self, default_value: float = 0.5, **kwargs):
-        super().__init__(num_classes=1, **kwargs)
+    def __init__(self, default_value: float = 0.5, num_classes: int = 1, **kwargs):
+        super().__init__(num_classes=num_classes, **kwargs)
 
-        self.add_state("value", default=torch.tensor(default_value), persistent=True)  # pylint: disable=not-callable
-        self.value = torch.tensor(default_value)  # pylint: disable=not-callable
+        self.default_value = default_value
+        self.add_state("value", default=torch.full((num_classes,), self.default_value, dtype=torch.float), persistent=True)  # pylint: disable=not-callable
+        self.value = torch.full((num_classes,), self.default_value, dtype=torch.float)  # pylint: disable=not-callable
 
     def compute(self) -> torch.Tensor:
         """Compute the threshold that yields the optimal F1 score.
@@ -34,16 +36,21 @@ class AnomalyScoreThreshold(PrecisionRecallCurve):
         Returns:
             Value of the F1 score at the optimal threshold.
         """
-        precision: torch.Tensor
-        recall: torch.Tensor
-        thresholds: torch.Tensor
+        precisions: List[torch.Tensor]
+        recalls: List[torch.Tensor]
+        thresholds: List[torch.Tensor]
 
-        precision, recall, thresholds = super().compute()
-        f1_score = (2 * precision * recall) / (precision + recall + 1e-10)
-        if thresholds.dim() == 0:
-            # special case where recall is 1.0 even for the highest threshold.
-            # In this case 'thresholds' will be scalar.
-            self.value = thresholds
-        else:
-            self.value = thresholds[torch.argmax(f1_score)]
-        return self.value
+        precisions, recalls, thresholds = super().compute()
+        precisions = [precisions] if not isinstance(precisions, list) else precisions
+        recalls = [recalls] if not isinstance(recalls, list) else recalls
+        thresholds = [thresholds] if not isinstance(thresholds, list) else thresholds
+
+        for i, (precision, recall, threshold) in enumerate(zip(precisions, recalls, thresholds)):
+            f1_score = (2 * precision * recall) / (precision + recall + 1e-10)
+            if threshold.dim() == 0:
+                # special case where recall is 1.0 even for the highest threshold.
+                # In this case 'thresholds' will be scalar.
+                self.value[i] = threshold
+            else:
+                self.value[i] = threshold[torch.argmax(f1_score)]
+        return self.value[0] if self.num_classes == 1 else self.value

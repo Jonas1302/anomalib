@@ -53,7 +53,7 @@ def plot_figure(
     x_vals = [x_vals] if not isinstance(x_vals, list) else x_vals
     y_vals = [y_vals] if not isinstance(y_vals, list) else y_vals
 
-    for x, y, auc in zip(x_vals, y_vals, aucs):
+    for i, (x, y, auc) in enumerate(zip(x_vals, y_vals, aucs)):
         x = x.detach().cpu()
         y = y.detach().cpu()
 
@@ -77,7 +77,7 @@ def plot_figure(
             y,
             figure=fig,
             lw=2,
-            label=f"AUC: {auc.detach().cpu():0.2f}",
+            label=f"AUC {i}: {auc.detach().cpu():0.2f}",
         )
 
     axis.set_xlim(xlim)

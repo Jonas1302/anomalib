@@ -329,10 +329,11 @@ class LabeledPatchcore(PatchcoreModel):
         anomaly_maps = anomaly_maps.reshape((len(self.labels), 1, width, height))
 
         anomaly_score = torch.zeros(1, len(self.labels))
-        anomaly_score[0, label] = anomaly_maps[label].max() if label != 0 else anomaly_maps[0].min()
+        for l in self.labels:
+            anomaly_score[0, l] = anomaly_maps[l].max() if l != 0 else anomaly_maps[0].min()
 
         anomaly_maps = self.anomaly_map_generator(anomaly_maps).permute(1, 0, 2, 3)
-        return anomaly_maps, anomaly_score
+        return anomaly_maps.to(device), anomaly_score.to(device)
 
     @staticmethod
     def _get_anomaly_map(reference_map: Tensor, anomaly_map: Tensor) -> Tensor:
