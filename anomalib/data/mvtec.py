@@ -155,16 +155,15 @@ def make_mvtec_dataset(
         for label in custom_mapping.normal_labels[category]:
             if label == "good":
                 continue
-            if not samples.label.isin([label]).any():
-                raise Exception(f"given label '{label}' is not in the dataset for the category '{category}'")
+            assert samples.label.isin([label]).any(), f"category '{category}' does not contain given label '{label}'"
             indices = (samples.label == label)
             # note: changing `samples.label_index` seems to be enough, `samples.label` isn't used anywhere below
-            samples.label_index[indices] = 0
-            samples.mask_path[indices] = ""
+            samples.loc[indices, "label_index"] = 0
+            samples.loc[indices, "mask_path"] = ""
             num_training_samples = int(len(samples.label[indices]) * custom_mapping.train_ratio_for_anomalies)
             samples_labeled_splits = samples.split[indices]
             samples_labeled_splits[:num_training_samples] = "train"
-            samples.split[indices] = samples_labeled_splits
+            samples.loc[indices, "split"] = samples_labeled_splits
 
     samples.label_index = samples.label_index.astype(int)
 
