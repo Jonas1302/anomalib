@@ -439,13 +439,12 @@ class MVTec(LightningDataModule):
         self.task = task
         self.seed = seed
 
-        self.train_data: Dataset
-        self.test_data: Dataset
+        self.train_data: MVTecDataset
+        self._test_data: Optional[MVTecDataset] = None
         if create_validation_set:
-            self.val_data: Dataset
+            self.val_data: MVTecDataset
         self.inference_data: Dataset
         self.label_mapping: Dict[int, str]
-        self.num_classes: int
 
     def prepare_data(self) -> None:
         """Download the dataset if not available."""
@@ -483,47 +482,36 @@ class MVTec(LightningDataModule):
         """
         logger.info("Setting up train, validation, test and prediction datasets.")
         if stage in (None, "fit"):
-            self.train_data = MVTecDataset(
-                root=self.root,
-                category=self.category,
-                pre_process=self.pre_process_train,
-                split="train",
-                task=self.task,
-                seed=self.seed,
-                create_validation_set=self.create_validation_set,
-                custom_mapping=self.custom_mapping,
-            )
+            self.train_data = self._create_dataset(self.pre_process_train, "train")
 
         if self.create_validation_set:
-            self.val_data = MVTecDataset(
-                root=self.root,
-                category=self.category,
-                pre_process=self.pre_process_val,
-                split="val",
-                task=self.task,
-                seed=self.seed,
-                create_validation_set=self.create_validation_set,
-                custom_mapping=self.custom_mapping,
+            self.val_data = self._create_dataset(self.pre_process_val, "val")
+
+        self.test_data
+        self.label_mapping = self.test_data.label_mapping
+
+        if stage == "predict":
+            self.inference_data = InferenceDataset(
+                path=self.root, image_size=self.image_size, transform_config=self.transform_config_val
             )
 
-        self.test_data = MVTecDataset(
+    def _create_dataset(self, pre_process: PreProcessor, split: str) -> MVTecDataset:
+        return MVTecDataset(
             root=self.root,
             category=self.category,
-            pre_process=self.pre_process_val,
-            split="test",
+            pre_process=pre_process,
+            split=split,
             task=self.task,
             seed=self.seed,
             create_validation_set=self.create_validation_set,
             custom_mapping=self.custom_mapping,
         )
 
-        self.label_mapping = self.test_data.label_mapping
-        self.num_classes = self.test_data.num_classes
-
-        if stage == "predict":
-            self.inference_data = InferenceDataset(
-                path=self.root, image_size=self.image_size, transform_config=self.transform_config_val
-            )
+    @property
+    def test_data(self) -> Dataset:
+        if self._test_dataset is None:
+            self._test_data = self._create_dataset(self.pre_process_val, "test")
+        return self._test_data
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         """Get train dataloader."""
@@ -543,3 +531,7 @@ class MVTec(LightningDataModule):
         return DataLoader(
             self.inference_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers
         )
+
+    @property
+    def num_classes(self) -> int:
+        return self.test_data.num_classes
