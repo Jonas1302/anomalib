@@ -302,6 +302,7 @@ class MVTecDataset(VisionDataset):
             binary_label_indices=(task != "classification"),
         )
         self.num_classes = len(self.label_mapping) if self.task == "classification" else 1
+        self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -325,7 +326,8 @@ class MVTecDataset(VisionDataset):
         pre_processed_no_normalization, pre_processed = self.pre_process(image=image, also_get_without_normalization=True)
         item = {
             "image": pre_processed["image"],
-            "image_visualization": pre_processed_no_normalization["image"]
+            "image_visualization": pre_processed_no_normalization["image"],
+            "images_per_class": self.images_per_class,
         }
 
         if self.split in ["val", "test"] or self.task == "classification":

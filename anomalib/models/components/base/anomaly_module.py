@@ -131,8 +131,8 @@ class AnomalyModule(pl.LightningModule, ABC):
 
     def _compute_adaptive_threshold(self, outputs):
         num_classes = self.trainer.datamodule.num_classes
-        self.image_threshold = AnomalyScoreThreshold(self.image_threshold.default_value, num_classes).cpu()
-        self.pixel_threshold = AnomalyScoreThreshold(self.pixel_threshold.default_value, num_classes).cpu()
+        self.image_threshold = AnomalyScoreThreshold(self.image_threshold.default_value, num_classes)
+        self.pixel_threshold = AnomalyScoreThreshold(self.pixel_threshold.default_value, num_classes)
         self._collect_outputs(self.image_threshold, self.pixel_threshold, outputs)
         self.image_threshold.compute()
         if "mask" in outputs[0].keys() and "anomaly_maps" in outputs[0].keys():
@@ -142,6 +142,9 @@ class AnomalyModule(pl.LightningModule, ABC):
 
         self.image_metrics.set_threshold(self.image_threshold.value)
         self.pixel_metrics.set_threshold(self.pixel_threshold.value)
+        # self._collect_outputs(...) always moves thresholds to cpu
+        self.image_threshold.to(self.device)
+        self.pixel_threshold.to(self.device)
 
     @staticmethod
     def _collect_outputs(image_metric, pixel_metric, outputs):

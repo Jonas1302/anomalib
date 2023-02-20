@@ -37,12 +37,13 @@ class ImageResult:
     label: Optional[int] = None
     label_mapping: Optional[Dict[int, str]] = None
 
-    heat_map: np.ndarray = field(init=False)
-    segmentations: np.ndarray = field(init=False)
-    heat_map_with_segmentations: np.ndarray = field(init=False)
+    heat_map: Optional[np.ndarray] = field(init=False, default=None)
+    segmentations: Optional[np.ndarray] = field(init=False, default=None)
+    heat_map_with_segmentations: Optional[np.ndarray] = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Generate heatmap overlay and segmentations, convert masks to images."""
+        # create heat maps
         if self.anomaly_maps is not None:
             if len(self.anomaly_maps.shape) == 2:
                 self.anomaly_maps = np.expand_dims(self.anomaly_maps, 0)
@@ -50,6 +51,7 @@ class ImageResult:
                 superimpose_anomaly_map(anomaly_map, self.image)
                 for anomaly_map in self.anomaly_maps
             ])
+        # create segmentations
         if self.pred_mask is not None and self.pred_mask.max() <= 1.0:
             self.pred_mask *= 255
             if len(self.pred_mask.shape) == 2:
@@ -61,6 +63,7 @@ class ImageResult:
                         self._create_segmentations(self.heat_map[i], self.pred_mask[i], color=(0, 1, 0))
                         for i in range(len(self.heat_map))
                     ])
+        # normalize masks from [0, 1] to [0, 255]
         if self.pred_mask_image_threshold is not None and self.pred_mask_image_threshold.max() <= 1.0:
             self.pred_mask_image_threshold *= 255
         if self.gt_mask is not None and self.gt_mask.max() <= 1.0:
@@ -163,20 +166,20 @@ class Visualizer:
         Returns:
             An image showing the full set of visualizations for the input image.
         """
-        use_combined_heat_map_and_segmentations = len(image_result.heat_map) > 2
-
         visualization = ImageGrid()
-        visualization.add_image(image_result.image, "Image")
+        visualization.add_image(self._add_label(image_result.image, image_result), "Image")  # TODO add label only if heat_map is None
         if self.task == "segmentation" and image_result.gt_mask is not None:
             visualization.add_image(image=image_result.gt_mask, color_map="gray", title="Ground Truth")
-        if use_combined_heat_map_and_segmentations:
+        if image_result.heat_map is not None and len(image_result.heat_map) > 2:
+            # use combined heat map with segmentations to reduce size of visualization image
             for i in range(len(image_result.heat_map_with_segmentations)):
                 visualization.add_image(self._add_label(image_result.heat_map_with_segmentations[i], image_result),
                                         f"Predicted Heat Map ({image_result.label_mapping[i]})")
         else:
-            for i in range(len(image_result.heat_map)):
-                visualization.add_image(self._add_label(image_result.heat_map[i], image_result),
-                                        f"Predicted Heat Map ({image_result.label_mapping[i]})")
+            if image_result.heat_map is not None:
+                for i in range(len(image_result.heat_map)):
+                    visualization.add_image(self._add_label(image_result.heat_map[i], image_result),
+                                            f"Predicted Heat Map ({image_result.label_mapping[i]})")
             if self.task == "classification" and image_result.pred_mask_image_threshold is not None:
                 visualization.add_image(image=image_result.pred_mask_image_threshold,
                                         color_map="gray", title="Predicted Mask (Image Threshold)")

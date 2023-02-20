@@ -12,8 +12,10 @@ from typing import List, Tuple, Union, Dict, Any, Optional
 import torch
 from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
+from torch import Tensor
 
 from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
+from anomalib.models.patchcore.classifier import ResnetClassifier
 from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
 
 logger = logging.getLogger(__name__)
@@ -145,7 +147,6 @@ class ClassificationPatchcore(Patchcore):
         outputs = batch
         outputs["anomaly_maps"] = anomaly_maps
         outputs["pred_scores"] = anomaly_score
-        self._post_process(outputs)
 
         label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
         outputs["label_mapping"] = label_mapping
@@ -160,8 +161,9 @@ class ClassificationPatchcore(Patchcore):
             pred_patch_masks = anomaly_patch_maps >= self.image_threshold.value
         outputs["pred_masks"] = pred_masks
 
-        pred_labels = []
         pred_scores_normed = outputs["pred_scores"] - self.image_threshold.value
+        outputs["pred_labels"] = []
+
         for i in range(len(pred_masks)):
             if self.most_common_anomaly_instead_of_highest_score:
                 bincount = torch.stack([pred_patch_masks[i, j].sum() for j in range(len(pred_patch_masks[i]))])
@@ -174,9 +176,8 @@ class ClassificationPatchcore(Patchcore):
                     label = 0
                 else:
                     label = pred_scores_normed[i].argmax().item()
-            pred_labels.append(label_mapping[label])
+            outputs["pred_labels"].append(label_mapping[label])
             outputs["pred_scores"][i, torch.arange(0, len(pred_masks[i])) != label] = 0  # set all to zero except label
-        outputs["pred_labels"] = pred_labels
 
         return outputs
 
@@ -194,7 +195,19 @@ class PatchcoreLightning:
         assert cls == PatchcoreLightning, "PatchcoreLightning cannot be subclassed (subclass would be ignored)"
 
         task = hparams.dataset.get("task", "segmentation")
-        cls2 = ClassificationPatchcore if task == "classification" else Patchcore
+        if task == "segmentation":
+            cls2 = Patchcore
+        elif task == "classification":
+            model_type = hparams.model.get("type", "embedding")
+            if model_type == "embedding":
+                cls2 = ClassificationPatchcore
+            elif model_type == "cnn":
+                cls2 = ResnetClassifier
+            else:
+                raise ValueError(f"unknown model type {model_type}")
+        else:
+            raise ValueError(f"unknown task {task}")
+
         obj = cls2(
             input_size=hparams.model.input_size,
             backbone=hparams.model.backbone,
@@ -209,6 +222,8 @@ class PatchcoreLightning:
             labeled_coreset=hparams.model.get("labeled_coreset", False),
             anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
             most_common_anomaly_instead_of_highest_score=hparams.model.get("most_common_anomaly_instead_of_highest_score", True),
+            num_classes=hparams.dataset.get("num_classes", None),
+            lr=hparams.model.get("lr"),
         )
         obj.save_hyperparameters(hparams)
 

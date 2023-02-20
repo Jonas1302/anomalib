@@ -170,6 +170,7 @@ def create_metric_collection(
     if isinstance(metrics, (ListConfig, list)):
         assert all(isinstance(metric, str) for metric in metrics), f"All metrics must be strings, found {metrics}"
         if num_classes:
+            return metric_collection_from_names(metrics, postfix="_average", average="macro", num_classes=num_classes)
             return AnomalibMetricCollection(
                 [
                     # returns once the average of each metric and once on a per-class basis
