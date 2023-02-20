@@ -15,7 +15,7 @@ from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from torch import Tensor
 
 from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
-from anomalib.models.patchcore.classifier import ResnetClassifier
+from anomalib.models.patchcore.classifier import ResnetClassifier, PatchBasedClassifier
 from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,8 @@ class PatchcoreLightning:
                 cls2 = ClassificationPatchcore
             elif model_type == "cnn":
                 cls2 = ResnetClassifier
+            elif model_type == "embedding-cnn":
+                cls2 = PatchBasedClassifier
             else:
                 raise ValueError(f"unknown model type {model_type}")
         else:

@@ -1,4 +1,4 @@
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Tuple
 
 import timm
 import torch
@@ -83,3 +83,68 @@ class ResnetClassifier(Classifier):
     def forward(self, input_tensor: Tensor) -> Tensor:
         output = self.pretrained_model(input_tensor)
         return self.classifier_model(output)
+
+
+class PatchBasedClassifier(Classifier):
+    def __init__(
+            self,
+            backbone: str,
+            num_classes: int,
+            anomaly_threshold: float,
+            input_size: Tuple[int, int],
+            hidden_size: int = 100,
+            **kwargs):
+        super().__init__(**kwargs)
+
+        self.num_classes = num_classes
+
+        if backbone == "wide_resnet50_2":
+            self.feature_extractor = PatchcoreModel(
+                input_size=input_size,
+                layers=["layer2", "layer3"],
+                backbone=backbone,
+            ).get_embedding
+            self.embedding_size = 1536
+        else:
+            raise ValueError(f"unsupported backbone model {backbone}")
+
+        self.classifier = torch.nn.Sequential(
+            torch.nn.Linear(self.embedding_size, hidden_size),
+            torch.nn.LeakyReLU(),
+            torch.nn.Linear(hidden_size, num_classes),
+            torch.nn.Softmax(dim=1),
+        )
+
+    def forward(self, input_tensor: Tensor) -> Tensor:
+        return self.classifier(input_tensor)
+
+    def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None) -> Dict:
+        predictions = []
+
+        for i in range(len(batch["image"])):
+            embedding = self.extract_embeddings(batch["image"][i])
+            batch_size, num_features, width, height = embedding.shape
+            assert batch_size == 1 and num_features == self.embedding_size, f"{batch_size=}; {num_features=}"
+            embedding = PatchcoreModel.reshape_embedding(embedding)  # shape: [1 * width * height, num_features]
+            prediction: Tensor = self(embedding)  # shape: [1 * width * height, num_classes]
+            predictions.append(prediction.reshape(1, width, height, self.num_classes))  # map of class probabilities
+
+        predictions = torch.concat(predictions)
+        batch["pred_scores"] = predictions  # TODO shouldn't this be `label` from below?
+
+        label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
+        batch["label_mapping"] = label_mapping
+
+        batch["pred_labels"] = []
+        for i in range(len(predictions)):
+            bincount = predictions[i].argmax(dim=-1).bincount()
+            if bincount[1:].any():  # any anomalous patches
+                label = bincount[1:].argmax().item() + 1
+            else:
+                label = 0
+            batch["pred_labels"].append(label_mapping[label])
+
+        return batch
+
+    def extract_embeddings(self, input_tensor: Tensor) -> Tensor:
+        return self.feature_extractor(input_tensor)

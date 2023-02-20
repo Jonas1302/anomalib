@@ -352,6 +352,48 @@ class MVTecDataset(VisionDataset):
             item["image"] = pre_processed["image"]
             item["image_visualization"] = pre_processed_no_normalization["image"]
             item["mask"] = pre_processed["mask"]
+            item["continuous_mask"] = cv2.resize(mask, dsize=item["image"].shape[1:], interpolation=cv2.INTER_AREA)
+
+        return item
+
+
+class PatchwiseWrapper:
+    def __init__(self, dataset: MVTecDataset, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
+        assert dataset.split == "train", "wrapper currently only implemented for train set"
+        assert dataset.task == "classification", "wrapper currently only implemented for classification"
+        self.dataset = dataset
+        self.embedding_extractor = embedding_extractor
+        self.num_patches = num_patches_per_dimension ** 2
+        self.num_patches_per_dimension = num_patches_per_dimension
+        self.anomaly_threshold = anomaly_threshold
+
+    def __len__(self):
+        return len(self.dataset) * self.num_patches
+
+    def __getitem__(self, index):
+        image_index = index // self.num_patches
+        embedding_index = index % self.num_patches
+        x, y = embedding_index // self.num_patches_per_dimension, embedding_index % self.num_patches_per_dimension
+
+        item = self.dataset.__getitem__(image_index)
+        embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
+
+        batch_size, num_features, width, height = embedding.shape
+        assert batch_size == 1 and width == height == self.num_patches_per_dimension
+        embedding = embedding.permute(0, 2, 3, 1).reshape(width * height, num_features)
+
+        item["embedding_index"] = embedding_index
+        item["image"] = embedding[embedding_index]
+        item["patch_anomaly_value"] = item["continuous_mask"][x, y]
+        if item["patch_anomaly_value"] < self.anomaly_threshold:
+            item["label"] = 0
+            item["label_name"] = self.dataset.label_mapping[0]
+        del item["image_visualization"]
+        del item["mask"]
+        del item["continuous_mask"]
+
+        # TODO we can currently only estimate the number of anomalous patches
+        item["images_per_class"][0] *= self.num_patches
 
         return item
 
@@ -441,7 +483,7 @@ class MVTec(LightningDataModule):
         self.task = task
         self.seed = seed
 
-        self.train_data: MVTecDataset
+        self._train_data: Optional[Dataset] = None
         self._test_data: Optional[MVTecDataset] = None
         if create_validation_set:
             self.val_data: MVTecDataset
@@ -484,7 +526,7 @@ class MVTec(LightningDataModule):
         """
         logger.info("Setting up train, validation, test and prediction datasets.")
         if stage in (None, "fit"):
-            self.train_data = self._create_dataset(self.pre_process_train, "train")
+            self.train_data  # create dataset
 
         if self.create_validation_set:
             self.val_data = self._create_dataset(self.pre_process_val, "val")
@@ -510,8 +552,18 @@ class MVTec(LightningDataModule):
         )
 
     @property
-    def test_data(self) -> Dataset:
-        if self._test_dataset is None:
+    def train_data(self) -> Dataset:
+        if self._train_data is None:
+            self._train_data = self._create_dataset(self.pre_process_train, "train")
+        return self._train_data
+
+    @train_data.setter
+    def train_data(self, value):
+        self._train_data = value
+
+    @property
+    def test_data(self) -> MVTecDataset:
+        if self._test_data is None:
             self._test_data = self._create_dataset(self.pre_process_val, "test")
         return self._test_data
 
@@ -537,3 +589,6 @@ class MVTec(LightningDataModule):
     @property
     def num_classes(self) -> int:
         return self.test_data.num_classes
+
+    def set_train_embedding_extractor(self, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
+        self.train_data = PatchwiseWrapper(self.train_data, embedding_extractor, num_patches_per_dimension, anomaly_threshold)

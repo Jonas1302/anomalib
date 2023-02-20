@@ -17,6 +17,7 @@ from anomalib.models.components.feature_extractors.timm import get_feature_extra
 from anomalib.models.components.sampling.k_center_greedy import KCenter
 from anomalib.models.patchcore.anomaly_map import AnomalyMapGenerator
 from anomalib.pre_processing import Tiler
+from anomalib.pre_processing.embedding import separate_anomaly_embeddings
 
 
 class PatchcoreModel(DynamicBufferModule, nn.Module):
@@ -236,24 +237,6 @@ class LabeledPatchcore(PatchcoreModel):
         self.labels = set()
         self.most_common_anomaly_instead_of_highest_score = most_common_anomaly_instead_of_highest_score
 
-    def _separate_anomaly_embeddings(self, embedding: Tensor, ground_truth: Tensor) -> Tuple[Tensor, Tensor]:
-        """Split a single `embedding` into normal and anomalous based on `ground_truth` and `self.anomaly_threshold`.
-
-        Args:
-            embedding (Tensor): embeddings to be split into normal and anomalous; shape: [num_features, width, height]
-            ground_truth (Tensor): ground truth containing 1 for anomaly and 0 for normal patches; original image size
-
-        Returns:
-            Tuple[Tensor, Tensor]: two tensors with the embeddings where rescaled ground truth is below/above the
-                threshold, respectively; shape: [num_embeddings, num_features]
-        """
-        embedding = embedding.permute(1, 2, 0)  # make channel-last
-        ground_truth = cv2.resize(ground_truth.cpu().numpy(), dsize=embedding.shape[:2], interpolation=cv2.INTER_AREA)
-        anomalous_indices = ground_truth >= self.anomaly_threshold
-        anomalous_embedding = embedding[anomalous_indices, :]
-        normal_embedding = embedding[~anomalous_indices, :]
-        return normal_embedding, anomalous_embedding
-
     def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None, \
                 get_anomaly_patch_map: bool = False) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
         embeddings = self.get_embedding(input_tensor)
@@ -263,7 +246,7 @@ class LabeledPatchcore(PatchcoreModel):
             for i in range(batch_size):
                 if labels[i] != 0:
                     # only add anomalous embeddings
-                    _, embedding = self._separate_anomaly_embeddings(embeddings[i], ground_truths[i])
+                    _, embedding = separate_anomaly_embeddings(embeddings[i], ground_truths[i], self.anomaly_threshold)
                 else:
                     embedding = self.reshape_embedding(embeddings[i].unsqueeze(0))
                 # Note: `self.coreset_sampling` is used as an empty blueprint, it allows us to share its projection
