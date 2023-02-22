@@ -170,10 +170,10 @@ class Visualizer:
         visualization.add_image(self._add_label(image_result.image, image_result), "Image")  # TODO add label only if heat_map is None
         if self.task == "segmentation" and image_result.gt_mask is not None:
             visualization.add_image(image=image_result.gt_mask, color_map="gray", title="Ground Truth")
-        if image_result.heat_map is not None and len(image_result.heat_map) > 2:
+        if image_result.heat_map_with_segmentations is not None and len(image_result.heat_map_with_segmentations) >= 2:
             # use combined heat map with segmentations to reduce size of visualization image
             for i in range(len(image_result.heat_map_with_segmentations)):
-                visualization.add_image(self._add_label(image_result.heat_map_with_segmentations[i], image_result),
+                visualization.add_image(image_result.heat_map_with_segmentations[i],
                                         f"Predicted Heat Map ({image_result.label_mapping[i]})")
         else:
             if image_result.heat_map is not None:

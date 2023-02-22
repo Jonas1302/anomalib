@@ -198,12 +198,12 @@ class PatchcoreLightning:
         if task == "segmentation":
             cls2 = Patchcore
         elif task == "classification":
-            model_type = hparams.model.get("type", "embedding")
-            if model_type == "embedding":
+            model_type = hparams.model.get("type", "labeled-coreset")
+            if model_type in ["embedding", "labeled-coreset"]:
                 cls2 = ClassificationPatchcore
-            elif model_type == "cnn":
+            elif model_type == "finetuned-cnn":
                 cls2 = ResnetClassifier
-            elif model_type == "embedding-cnn":
+            elif model_type == "embedding-mlp":
                 cls2 = PatchBasedClassifier
             else:
                 raise ValueError(f"unknown model type {model_type}")
@@ -226,6 +226,7 @@ class PatchcoreLightning:
             most_common_anomaly_instead_of_highest_score=hparams.model.get("most_common_anomaly_instead_of_highest_score", True),
             num_classes=hparams.dataset.get("num_classes", None),
             lr=hparams.model.get("lr"),
+            hidden_size=hparams.model.get("hidden_size"),
         )
         obj.save_hyperparameters(hparams)
 

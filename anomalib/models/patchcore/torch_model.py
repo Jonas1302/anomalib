@@ -275,6 +275,7 @@ class LabeledPatchcore(PatchcoreModel):
                 score in [0, 1] for the predicted label and zero for all others and the unscaled anomaly map with one
                 entry per patch; all with batch-size 1
         """
+        device = embedding.device
         closest_results: Dict[int, Tensor] = {}
         index_to_label: List[int] = []
 
@@ -290,19 +291,6 @@ class LabeledPatchcore(PatchcoreModel):
             scores = self.compute_anomaly_score_map(patch_scores, locations, embedding, self.memory_banks[label])
             closest_results[label] = scores
             index_to_label.append(label)  # later, we can simply use `index_to_label[index]` because the entries have the same order as in `closest_results`
-
-        # get the lowest scores and their indices per patch
-        closest_map, locations = torch.cat(tuple(closest_results.values())).min(dim=0)
-        device = locations.device
-        # map indices to labels
-        result = locations.cpu().apply_(lambda index: index_to_label[index]).to(device)
-
-        if (result == 0).all():
-            # no anomalies => classify as good
-            label = 0
-        else:
-            # get most common label > 0
-            label = result.bincount()[1:].argmax().item() + 1
 
         # lowest anomaly scores for each patch
         good_anomaly_map = torch.cat(list(closest_results.values())[1:]).min(dim=0)[0]
