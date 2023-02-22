@@ -31,13 +31,14 @@ import logging
 import tarfile
 import warnings
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 from urllib.request import urlretrieve
 
 import albumentations as A
 import cv2
 import numpy as np
 import pandas as pd
+import torch
 from omegaconf import OmegaConf, DictConfig
 from pandas.core.frame import DataFrame
 from pytorch_lightning.core.datamodule import LightningDataModule
@@ -196,6 +197,25 @@ def make_mvtec_dataset(
         samples = samples[samples.split == split]
         samples = samples.reset_index(drop=True)
 
+    if custom_mapping and split == "train":
+        if custom_mapping.limit_good_train_images == "max_anomaly":
+            # limit the number of good images to the number of images of the most common anomaly type
+            num_max_anomaly = max([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
+            samples = samples.groupby("label").head(num_max_anomaly)
+        elif custom_mapping.limit_good_train_images == "sum_anomalies":
+            # limit the number of good images to the sum of all anomaly images
+            sum_anomalies = sum([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
+            samples = samples.groupby("label").head(sum_anomalies)
+        elif custom_mapping.limit_good_train_images is False:
+            pass
+        elif isinstance(custom_mapping.limit_good_train_images, int):
+            # limit the number of good images to a specific constant
+            samples = pd.concat([samples[samples.label != "good"], samples[samples.label == "good"][:custom_mapping.limit_good_train_images]])
+        else:
+            raise ValueError(f"unknown value for {custom_mapping.limit_good_train_images=}")
+
+        samples = samples.reset_index(drop=True)
+
     return samples, label_mapping
 
 
@@ -285,10 +305,12 @@ class MVTecDataset(VisionDataset):
                or custom_mapping.custom_labels[category].get("good") != "anomaly" \
                or task == "classification", \
                "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
+
         self.root = Path(root) if isinstance(root, str) else root
         self.category: str = category
         self.split = split
         self.task = task
+        self.custom_mapping = custom_mapping
 
         self.pre_process = pre_process
 
@@ -318,6 +340,9 @@ class MVTecDataset(VisionDataset):
             Union[Dict[str, Tensor], Dict[str, Union[str, Tensor]]]: Dict of image tensor during training.
                 Otherwise, Dict containing image path, target path, image tensor, label and transformed bounding box.
         """
+        if index >= len(self):
+            raise IndexError
+
         item: Dict[str, Union[str, Tensor]] = {}
 
         image_path = self.samples.image_path[index]
@@ -352,7 +377,6 @@ class MVTecDataset(VisionDataset):
             item["image"] = pre_processed["image"]
             item["image_visualization"] = pre_processed_no_normalization["image"]
             item["mask"] = pre_processed["mask"]
-            item["continuous_mask"] = cv2.resize(mask, dsize=item["image"].shape[1:], interpolation=cv2.INTER_AREA)
 
         return item
 
@@ -362,39 +386,76 @@ class PatchwiseWrapper:
         assert dataset.split == "train", "wrapper currently only implemented for train set"
         assert dataset.task == "classification", "wrapper currently only implemented for classification"
         self.dataset = dataset
+        self.num_classes = dataset.num_classes
+        self.label_mapping = dataset.label_mapping
         self.embedding_extractor = embedding_extractor
         self.num_patches = num_patches_per_dimension ** 2
         self.num_patches_per_dimension = num_patches_per_dimension
         self.anomaly_threshold = anomaly_threshold
+        self.items: List[Dict[str, Union[str, Tensor]]] = []
+        self.images_per_class = torch.zeros(self.num_classes, dtype=torch.int)
+
+        for item in dataset:
+            self._add_item(item)
+
+        if dataset.custom_mapping and dataset.split == "train":
+            self._limit_good_patches()
+
+        logger.warning(f"number of patches for training: {self.images_per_class}")
+
+    def _add_item(self, item):
+        embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
+        batch_size, num_features, width, height = embedding.shape
+
+        assert batch_size == 1 and width == height == self.num_patches_per_dimension
+
+        embedding = embedding.permute(0, 2, 3, 1).reshape(width * height, num_features)
+        continuous_mask = cv2.resize(item["mask"].numpy(), dsize=(height, width), interpolation=cv2.INTER_AREA)
+
+        for j in range(self.num_patches):
+            x, y = divmod(j, self.num_patches_per_dimension)
+            subitem = {k: item[k] for k in ["label", "label_name"]}
+            subitem["patch_anomaly_value"] = continuous_mask[x, y]
+            subitem["image"] = embedding[j]
+
+            if subitem["label"] != 0 and subitem["patch_anomaly_value"] < self.anomaly_threshold:
+                continue
+
+            self.items.append(subitem)
+            self.images_per_class[subitem["label"]] += 1
+
+    def _limit_good_patches(self):
+        limit_good_train_images = self.dataset.custom_mapping.limit_good_train_images
+        if limit_good_train_images == "max_anomaly":
+            # limit the number of good patches to the number of patches of the most common anomaly type
+            limit = max(self.images_per_class[1:])
+        elif limit_good_train_images == "sum_anomalies":
+            # limit the number of good patches to the sum of all anomaly patches
+            limit = sum(self.images_per_class[1:])
+        elif limit_good_train_images is False:
+            limit = self.images_per_class[0]  # use any number equal or greater to the current number of good patches
+        elif isinstance(limit_good_train_images, int):
+            # limit the number of good patches to a specific constant
+            limit = limit_good_train_images
+        else:
+            raise ValueError(f"unknown value for {limit_good_train_images=}")
+
+        limit = min(limit, self.images_per_class[0])  # remove no more than the total number of good patches
+        num_remove_good = self.images_per_class[0] - limit  # number of good patches to remove
+        self.images_per_class[0] = limit
+        if num_remove_good > 0:
+            # sort good patches to the end and remove them
+            self.items = sorted(self.items, key=lambda item: item["label"] == 0)[:-num_remove_good]
 
     def __len__(self):
-        return len(self.dataset) * self.num_patches
+        return len(self.items)
 
     def __getitem__(self, index):
-        image_index = index // self.num_patches
-        embedding_index = index % self.num_patches
-        x, y = embedding_index // self.num_patches_per_dimension, embedding_index % self.num_patches_per_dimension
+        if index >= len(self):
+            raise IndexError
 
-        item = self.dataset.__getitem__(image_index)
-        embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
-
-        batch_size, num_features, width, height = embedding.shape
-        assert batch_size == 1 and width == height == self.num_patches_per_dimension
-        embedding = embedding.permute(0, 2, 3, 1).reshape(width * height, num_features)
-
-        item["embedding_index"] = embedding_index
-        item["image"] = embedding[embedding_index]
-        item["patch_anomaly_value"] = item["continuous_mask"][x, y]
-        if item["patch_anomaly_value"] < self.anomaly_threshold:
-            item["label"] = 0
-            item["label_name"] = self.dataset.label_mapping[0]
-        del item["image_visualization"]
-        del item["mask"]
-        del item["continuous_mask"]
-
-        # TODO we can currently only estimate the number of anomalous patches
-        item["images_per_class"][0] *= self.num_patches
-
+        item = self.items[index].copy()
+        item["images_per_class"] = self.images_per_class
         return item
 
 
