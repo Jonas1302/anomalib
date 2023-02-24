@@ -198,23 +198,21 @@ def make_mvtec_dataset(
         samples = samples.reset_index(drop=True)
 
     if custom_mapping and split == "train":
-        if custom_mapping.limit_good_train_images == "max_anomaly":
+        if custom_mapping.limit_train_images == "max_anomaly":
             # limit the number of good images to the number of images of the most common anomaly type
-            num_max_anomaly = max([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
-            samples = samples.groupby("label").head(num_max_anomaly)
-        elif custom_mapping.limit_good_train_images == "sum_anomalies":
+            limit = max([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
+        elif custom_mapping.limit_train_images == "sum_anomalies":
             # limit the number of good images to the sum of all anomaly images
-            sum_anomalies = sum([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
-            samples = samples.groupby("label").head(sum_anomalies)
-        elif custom_mapping.limit_good_train_images is False:
-            pass
-        elif isinstance(custom_mapping.limit_good_train_images, int):
+            limit = sum([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
+        elif custom_mapping.limit_train_images is False:  # check before `int` because bool is subclass of `int`
+            limit = len(samples)
+        elif isinstance(custom_mapping.limit_train_images, int):
             # limit the number of good images to a specific constant
-            samples = pd.concat([samples[samples.label != "good"], samples[samples.label == "good"][:custom_mapping.limit_good_train_images]])
+            limit = custom_mapping.limit_train_images
         else:
-            raise ValueError(f"unknown value for {custom_mapping.limit_good_train_images=}")
+            raise ValueError(f"unknown value for {custom_mapping.limit_train_images=}")
 
-        samples = samples.reset_index(drop=True)
+        samples = samples.groupby("label").head(limit).reset_index(drop=True)
 
     return samples, label_mapping
 
@@ -325,6 +323,7 @@ class MVTecDataset(VisionDataset):
         )
         self.num_classes = len(self.label_mapping) if self.task == "classification" else 1
         self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
+        logger.warning(f"number of images for {split}: {self.images_per_class}")
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -383,7 +382,6 @@ class MVTecDataset(VisionDataset):
 
 class PatchwiseWrapper:
     def __init__(self, dataset: MVTecDataset, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
-        assert dataset.split == "train", "wrapper currently only implemented for train set"
         assert dataset.task == "classification", "wrapper currently only implemented for classification"
         self.dataset = dataset
         self.num_classes = dataset.num_classes
@@ -401,7 +399,7 @@ class PatchwiseWrapper:
         if dataset.custom_mapping and dataset.split == "train":
             self._limit_good_patches()
 
-        logger.warning(f"number of patches for training: {self.images_per_class}")
+        logger.warning(f"number of patches for {dataset.split}: {self.images_per_class}")
 
     def _add_item(self, item):
         embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
@@ -425,27 +423,31 @@ class PatchwiseWrapper:
             self.images_per_class[subitem["label"]] += 1
 
     def _limit_good_patches(self):
-        limit_good_train_images = self.dataset.custom_mapping.limit_good_train_images
-        if limit_good_train_images == "max_anomaly":
+        limit_train_images = self.dataset.custom_mapping.limit_train_images
+        if limit_train_images == "max_anomaly":
             # limit the number of good patches to the number of patches of the most common anomaly type
             limit = max(self.images_per_class[1:])
-        elif limit_good_train_images == "sum_anomalies":
+        elif limit_train_images == "sum_anomalies":
             # limit the number of good patches to the sum of all anomaly patches
             limit = sum(self.images_per_class[1:])
-        elif limit_good_train_images is False:
+        elif limit_train_images is False:
             limit = self.images_per_class[0]  # use any number equal or greater to the current number of good patches
-        elif isinstance(limit_good_train_images, int):
+        elif isinstance(limit_train_images, int):
             # limit the number of good patches to a specific constant
-            limit = limit_good_train_images
+            limit = limit_train_images
         else:
-            raise ValueError(f"unknown value for {limit_good_train_images=}")
+            raise ValueError(f"unknown value for {limit_train_images=}")
 
-        limit = min(limit, self.images_per_class[0])  # remove no more than the total number of good patches
-        num_remove_good = self.images_per_class[0] - limit  # number of good patches to remove
-        self.images_per_class[0] = limit
-        if num_remove_good > 0:
-            # sort good patches to the end and remove them
-            self.items = sorted(self.items, key=lambda item: item["label"] == 0)[:-num_remove_good]
+        images_per_class = torch.zeros(self.num_classes)
+        new_items = []
+        for item in self.items:
+            label = item["label"]
+            if images_per_class[label] < limit:
+                new_items.append(item)
+                images_per_class[label] += 1
+
+        self.items = new_items
+        self.images_per_class = images_per_class
 
     def __len__(self):
         return len(self.items)
@@ -545,6 +547,7 @@ class MVTec(LightningDataModule):
         self.seed = seed
 
         self._train_data: Optional[Dataset] = None
+        self._val_data: Optional[Dataset] = None
         self._test_data: Optional[MVTecDataset] = None
         if create_validation_set:
             self.val_data: MVTecDataset
@@ -589,9 +592,7 @@ class MVTec(LightningDataModule):
         if stage in (None, "fit"):
             self.train_data  # create dataset
 
-        if self.create_validation_set:
-            self.val_data = self._create_dataset(self.pre_process_val, "val")
-
+        self.val_data
         self.test_data
         self.label_mapping = self.test_data.label_mapping
 
@@ -618,9 +619,14 @@ class MVTec(LightningDataModule):
             self._train_data = self._create_dataset(self.pre_process_train, "train")
         return self._train_data
 
-    @train_data.setter
-    def train_data(self, value):
-        self._train_data = value
+    @property
+    def val_data(self) -> Dataset:
+        if self._val_data is None:
+            if self.create_validation_set:
+                self._val_data = self._create_dataset(self.pre_process_val, "val")
+            else:
+                self._val_data = self.test_data
+        return self._val_data
 
     @property
     def test_data(self) -> MVTecDataset:
@@ -634,8 +640,7 @@ class MVTec(LightningDataModule):
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
         """Get validation dataloader."""
-        dataset = self.val_data if self.create_validation_set else self.test_data
-        return DataLoader(dataset=dataset, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
+        return DataLoader(dataset=self.val_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
         """Get test dataloader."""
@@ -652,4 +657,5 @@ class MVTec(LightningDataModule):
         return self.test_data.num_classes
 
     def set_train_embedding_extractor(self, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
-        self.train_data = PatchwiseWrapper(self.train_data, embedding_extractor, num_patches_per_dimension, anomaly_threshold)
+        self._train_data = PatchwiseWrapper(self.train_data, embedding_extractor, num_patches_per_dimension, anomaly_threshold)
+        self._val_data = PatchwiseWrapper(self.val_data, embedding_extractor,num_patches_per_dimension, anomaly_threshold)

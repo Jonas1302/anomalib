@@ -120,7 +120,8 @@ class PatchBasedClassifier(Classifier):
         return self.classifier(input_tensor)
 
     def validation_step(self, batch, batch_idx) -> Dict:
-        return self.predict_step(batch, batch_idx, log=True)
+        with torch.no_grad():
+            return self.training_step(batch, batch_idx, log=True, log_prefix="val_")
 
     def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None, log=False) -> Dict:
         predictions = []
