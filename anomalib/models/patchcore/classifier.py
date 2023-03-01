@@ -132,7 +132,8 @@ class PatchBasedClassifier(Classifier):
             batch_size, num_features, width, height = embedding.shape
             assert batch_size == 1 and num_features == self.embedding_size, f"{batch_size=}; {num_features=}"
             embedding = PatchcoreModel.reshape_embedding(embedding)  # shape: [1 * width * height, num_features]
-            prediction: Tensor = self(embedding).reshape(1, width, height, self.num_classes)
+            prediction: Tensor = torch.nn.functional.softmax(self(embedding))
+            predictions = predictions.reshape(1, width, height, self.num_classes)
             predictions.append(prediction)  # map of class probabilities
             anomaly_maps.append(self.backbone.anomaly_map_generator(prediction.permute(3, 0, 1, 2)).permute(1, 0, 2, 3))
 
