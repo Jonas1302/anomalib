@@ -6,10 +6,10 @@
 import logging
 import os
 from importlib import import_module
-from typing import List, Union
+from typing import List, Union, Callable
 
 from omegaconf import DictConfig, ListConfig
-from torch import load
+from torch import load, Tensor
 
 from anomalib.models.cflow import Cflow
 from anomalib.models.components import AnomalyModule
@@ -37,6 +37,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+FeatureExtractor = Callable[[Tensor], Tensor]
+EmbeddingExtractor = Callable[[Tensor], Tensor]
 
 
 def _snake_to_pascal_case(model_name: str) -> str:

@@ -155,6 +155,8 @@ def get_configurable_parameters(
     # Dataset Configs
     if "format" not in config.dataset.keys():
         config.dataset.format = "mvtec"
+    if isinstance(config.dataset.get("custom_mapping"), (str, Path)):
+        config.dataset.custom_mapping = OmegaConf.load(config.dataset.custom_mapping)
 
     config = update_input_size_config(config)
 

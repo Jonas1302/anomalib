@@ -31,7 +31,7 @@ import logging
 import tarfile
 import warnings
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union, List
+from typing import Dict, Optional, Tuple, Union, List, Literal
 from urllib.request import urlretrieve
 
 import albumentations as A
@@ -55,6 +55,8 @@ from anomalib.data.utils.split import (
     create_validation_set_from_test_set,
     split_normal_images_in_train_set,
 )
+from anomalib.models import EmbeddingExtractor
+from anomalib.models.components import KCenterGreedyBulk
 from anomalib.pre_processing import PreProcessor
 
 logger = logging.getLogger(__name__)
@@ -161,7 +163,7 @@ def make_mvtec_dataset(
                 if class_mode == "ignore":
                     samples = samples[samples.label != class_label]
                 elif class_mode == "normal":
-                    add_anomaly_to_train(samples, class_label, custom_mapping.train_ratio_for_anomalies)
+                    _add_anomaly_to_train(samples, class_label, custom_mapping.train_ratio_for_anomalies)
                 elif class_mode == "anomaly":
                     if class_label != "good":
                         continue  # non-"good" classes are in "test" by default
@@ -182,7 +184,7 @@ def make_mvtec_dataset(
                 samples.loc[(samples.label == "good"), "label_index"] = 0
                 label_mapping = {0: "good", **label_mapping}  # always make good '0' and always keep it as first entry
             else:
-                add_anomaly_to_train(samples, label, custom_mapping.train_ratio_for_anomalies if custom_mapping else 0.5)
+                _add_anomaly_to_train(samples, label, custom_mapping.train_ratio_for_anomalies if custom_mapping else 0.5)
                 samples.loc[(samples.label == label), "label_index"] = i
                 label_mapping[i] = label
                 i += 1
@@ -197,27 +199,10 @@ def make_mvtec_dataset(
         samples = samples[samples.split == split]
         samples = samples.reset_index(drop=True)
 
-    if custom_mapping and split == "train":
-        if custom_mapping.limit_train_images == "max_anomaly":
-            # limit the number of good images to the number of images of the most common anomaly type
-            limit = max([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
-        elif custom_mapping.limit_train_images == "sum_anomalies":
-            # limit the number of good images to the sum of all anomaly images
-            limit = sum([len(label_data) for label, label_data in samples.groupby("label") if label != "good"])
-        elif custom_mapping.limit_train_images is False:  # check before `int` because bool is subclass of `int`
-            limit = len(samples)
-        elif isinstance(custom_mapping.limit_train_images, int):
-            # limit the number of good images to a specific constant
-            limit = custom_mapping.limit_train_images
-        else:
-            raise ValueError(f"unknown value for {custom_mapping.limit_train_images=}")
-
-        samples = samples.groupby("label").head(limit).reset_index(drop=True)
-
     return samples, label_mapping
 
 
-def add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
+def _add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
     if class_label == "good":
         return  # "good" is in "train" by default
 
@@ -230,6 +215,23 @@ def add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
     samples_labeled_splits = samples.split[indices]
     samples_labeled_splits[:num_training_samples] = "train"
     samples.loc[indices, "split"] = samples_labeled_splits
+
+
+def _parse_limit(limit: Union[int, float, Literal['max_anomaly', 'sum_anomalies']], units_per_class: Union[np.ndarray, Tensor]) -> int:
+    if limit == "max_anomaly":
+        # limit the number of good patches to the number of patches of the most common anomaly type
+        return max(units_per_class[1:])
+    elif limit == "sum_anomalies":
+        # limit the number of good patches to the sum of all anomaly patches
+        return sum(units_per_class[1:])
+    elif isinstance(limit, int):
+        # limit the number of good patches to a specific constant
+        return limit
+    elif isinstance(limit, float):
+        # treat as ratio of good images
+        return int(units_per_class[0] * limit)
+    else:
+        raise ValueError(f"unknown value for {limit=}")
 
 
 class MVTecDataset(VisionDataset):
@@ -325,6 +327,13 @@ class MVTecDataset(VisionDataset):
         self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
         logger.warning(f"number of images for {split}: {self.images_per_class}")
 
+    def limit_patches(self):
+        if self.custom_mapping.limit_train_images is not False:
+            limit = _parse_limit(self.custom_mapping.limit_train_images, self.images_per_class)
+            self.samples = self.samples.groupby("label").head(limit).reset_index(drop=True)
+            self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
+            logger.warning(f"number of patches for {self.split}: {self.images_per_class}")
+
     def __len__(self) -> int:
         """Get length of the dataset."""
         return len(self.samples)
@@ -381,7 +390,14 @@ class MVTecDataset(VisionDataset):
 
 
 class PatchwiseWrapper:
-    def __init__(self, dataset: MVTecDataset, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
+    def __init__(
+            self,
+            dataset: MVTecDataset,
+            embedding_extractor: EmbeddingExtractor,
+            num_patches_per_dimension: int,
+            anomaly_threshold: float,
+            use_coreset_subsampling: bool = False
+    ):
         assert dataset.task == "classification", "wrapper currently only implemented for classification"
         self.dataset = dataset
         self.num_classes = dataset.num_classes
@@ -390,75 +406,74 @@ class PatchwiseWrapper:
         self.num_patches = num_patches_per_dimension ** 2
         self.num_patches_per_dimension = num_patches_per_dimension
         self.anomaly_threshold = anomaly_threshold
-        self.items: List[Dict[str, Union[str, Tensor]]] = []
-        self.images_per_class = torch.zeros(self.num_classes, dtype=torch.int)
+        self.use_coreset_subsampling = use_coreset_subsampling
 
-        for item in dataset:
-            self._add_item(item)
-
-        if dataset.custom_mapping and dataset.split == "train":
-            self._limit_good_patches()
+        self.items_map = self._create_item_map(dataset)
+        self.images_per_class = torch.tensor([len(self.items_map[i]) for i in range(self.num_classes)])
 
         logger.warning(f"number of patches for {dataset.split}: {self.images_per_class}")
 
-    def _add_item(self, item):
-        embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
-        batch_size, num_features, width, height = embedding.shape
+    def _create_item_map(self, dataset):
+        items_map: Dict[str, List[Dict[str, Union[str, Tensor]]]] = {i: [] for i in range(dataset.num_classes)}
 
-        assert batch_size == 1 and width == height == self.num_patches_per_dimension
+        for item in dataset:
+            embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
+            batch_size, num_features, width, height = embedding.shape
 
-        embedding = embedding.permute(0, 2, 3, 1).reshape(width * height, num_features)
-        continuous_mask = cv2.resize(item["mask"].numpy(), dsize=(height, width), interpolation=cv2.INTER_AREA)
+            assert batch_size == 1 and width == height == self.num_patches_per_dimension
 
-        for j in range(self.num_patches):
-            x, y = divmod(j, self.num_patches_per_dimension)
-            subitem = {k: item[k] for k in ["label", "label_name"]}
-            subitem["patch_anomaly_value"] = continuous_mask[x, y]
-            subitem["image"] = embedding[j]
+            embedding = embedding.permute(0, 2, 3, 1).reshape(width * height, num_features)
+            continuous_mask = cv2.resize(item["mask"].numpy(), dsize=(height, width), interpolation=cv2.INTER_AREA)
 
-            if subitem["label"] != 0 and subitem["patch_anomaly_value"] < self.anomaly_threshold:
+            for j in range(self.num_patches):
+                x, y = divmod(j, self.num_patches_per_dimension)
+                subitem = {k: item[k] for k in ["label", "label_name"]}
+                subitem["patch_anomaly_value"] = continuous_mask[x, y]
+                subitem["image"] = embedding[j]
+
+                if subitem["label"] != 0 and subitem["patch_anomaly_value"] < self.anomaly_threshold:
+                    continue
+
+                items_map[subitem["label"]].append(subitem)
+
+        return items_map
+
+    def limit_patches(self):
+        limit_train_images = self.dataset.custom_mapping.limit_train_images
+        if limit_train_images is False:
+            return
+
+        limit = _parse_limit(limit_train_images, self.images_per_class)
+
+        for label, values in self.items_map.items():
+            if len(values) <= limit:
                 continue
 
-            self.items.append(subitem)
-            self.images_per_class[subitem["label"]] += 1
+            if self.use_coreset_subsampling:
+                sampler = KCenterGreedyBulk(sampling_ratio=min(limit / len(values), 1.))
+                sampler.update(torch.stack([batch["image"] for batch in values]).cuda())
+                self.items_map[label] = [values[i] for i in sampler.select_coreset_idxs()]
+            else:
+                self.items_map[label] = values[:limit]
+            self.images_per_class[label] = len(self.items_map[label])
 
-    def _limit_good_patches(self):
-        limit_train_images = self.dataset.custom_mapping.limit_train_images
-        if limit_train_images == "max_anomaly":
-            # limit the number of good patches to the number of patches of the most common anomaly type
-            limit = max(self.images_per_class[1:])
-        elif limit_train_images == "sum_anomalies":
-            # limit the number of good patches to the sum of all anomaly patches
-            limit = sum(self.images_per_class[1:])
-        elif limit_train_images is False:
-            limit = self.images_per_class[0]  # use any number equal or greater to the current number of good patches
-        elif isinstance(limit_train_images, int):
-            # limit the number of good patches to a specific constant
-            limit = limit_train_images
-        else:
-            raise ValueError(f"unknown value for {limit_train_images=}")
-
-        images_per_class = torch.zeros(self.num_classes)
-        new_items = []
-        for item in self.items:
-            label = item["label"]
-            if images_per_class[label] < limit:
-                new_items.append(item)
-                images_per_class[label] += 1
-
-        self.items = new_items
-        self.images_per_class = images_per_class
+        logger.warning(f"limited number of patches for {self.dataset.split}: {self.images_per_class}")
 
     def __len__(self):
-        return len(self.items)
+        return sum(self.images_per_class)
 
     def __getitem__(self, index):
         if index >= len(self):
             raise IndexError
 
-        item = self.items[index].copy()
-        item["images_per_class"] = self.images_per_class
-        return item
+        for i in range(self.num_classes):
+            if index < self.images_per_class[i]:
+                item = self.items_map[i][index].copy()
+                item["images_per_class"] = self.images_per_class
+                return item
+            index -= self.images_per_class[i]
+        else:
+            raise Exception("should've already risen an IndexError => implementation error?")
 
 
 @DATAMODULE_REGISTRY
@@ -479,7 +494,7 @@ class MVTec(LightningDataModule):
         transform_config_val: Optional[Union[str, A.Compose]] = None,
         seed: Optional[int] = None,
         create_validation_set: bool = False,
-        custom_mapping: Optional[Union[Path, str, DictConfig]] = None,
+        custom_mapping: Optional[DictConfig] = None,
     ) -> None:
         """Mvtec AD Lightning Data Module.
 
@@ -530,7 +545,7 @@ class MVTec(LightningDataModule):
         self.transform_config_train = transform_config_train
         self.transform_config_val = transform_config_val
         self.image_size = image_size
-        self.custom_mapping = OmegaConf.load(custom_mapping) if isinstance(custom_mapping, (Path, str)) else custom_mapping
+        self.custom_mapping = custom_mapping
 
         if self.transform_config_train is not None and self.transform_config_val is None:
             self.transform_config_val = self.transform_config_train
@@ -591,6 +606,7 @@ class MVTec(LightningDataModule):
         logger.info("Setting up train, validation, test and prediction datasets.")
         if stage in (None, "fit"):
             self.train_data  # create dataset
+            self.train_data.limit_patches()
 
         self.val_data
         self.test_data
@@ -656,6 +672,9 @@ class MVTec(LightningDataModule):
     def num_classes(self) -> int:
         return self.test_data.num_classes
 
-    def set_train_embedding_extractor(self, embedding_extractor, num_patches_per_dimension: int, anomaly_threshold: float):
-        self._train_data = PatchwiseWrapper(self.train_data, embedding_extractor, num_patches_per_dimension, anomaly_threshold)
-        self._val_data = PatchwiseWrapper(self.val_data, embedding_extractor,num_patches_per_dimension, anomaly_threshold)
+    def set_train_embedding_extractor(self, embedding_extractor: EmbeddingExtractor, num_patches_per_dimension: int,
+                                      anomaly_threshold: float, use_coreset_subsampling: bool = False):
+        self._train_data = PatchwiseWrapper(self.train_data, embedding_extractor, num_patches_per_dimension,
+                                            anomaly_threshold, use_coreset_subsampling)
+        self._val_data = PatchwiseWrapper(self.val_data, embedding_extractor, num_patches_per_dimension,
+                                          anomaly_threshold, use_coreset_subsampling)
