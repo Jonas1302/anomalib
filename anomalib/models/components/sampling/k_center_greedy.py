@@ -66,7 +66,7 @@ class KCenterGreedyBulk(KCenter):
         super().__init__(sampling_ratio)
 
         self.features: Tensor
-        self.min_distances: Tensor = None
+        self.min_distances: Optional[Tensor] = None
 
     def reset_distances(self) -> None:
         """Reset minimum distances."""
@@ -114,6 +114,8 @@ class KCenterGreedyBulk(KCenter):
         Returns:
           indices of samples selected to minimize distance to cluster centers
         """
+        if self.coreset_size == len(self.embedding):
+            return list(range(self.coreset_size))
 
         if selected_idxs is None:
             selected_idxs = []
@@ -166,14 +168,13 @@ class KCenterGreedyBulk(KCenter):
         return coreset
 
 
-class KCenterGreedyOnline:  # intentionally no subclass of `KCenterGreedy` because none of its implementation is used
+class KCenterGreedyOnline(KCenter):
     """Implements k-center-greedy method for incremental usage."""
 
     def __init__(self, sampling_ratio: float) -> None:
-        self.sampling_ratio = sampling_ratio
-        self.model = SparseRandomProjection(eps=0.9)
+        super().__init__(sampling_ratio)
 
-        self.reduced_coreset: List[Tensor] = []  # coreset with the reduced emebeddings after applying the projection
+        self.reduced_coreset: List[Tensor] = []  # coreset with the reduced embeddings after applying the projection
         self.coreset: List[Tensor] = []  # M_C in the paper
 
     def _calculate_min_distances(self, features: Tensor) -> Tensor:
@@ -224,6 +225,7 @@ class KCenterGreedyOnline:  # intentionally no subclass of `KCenterGreedy` becau
 
 
 class KCenterRandom(KCenter):
+    """A coreset subsampling that randomly selects embeddings."""
     def get_coreset(self) -> Tensor:
         import numpy as np
 
@@ -232,6 +234,10 @@ class KCenterRandom(KCenter):
         return coreset
 
 class KCenterAll(KCenter):
+    """A "subsampling" that returns all embeddings as coreset.
+
+    This is equivalent to `KCenterGreedyBulk(sampling_ratio=1.0)` but way faster because no actual subsampling happens.
+    """
     def __init__(self, sampling_ratio=None):
         super().__init__(sampling_ratio=1.0)
 

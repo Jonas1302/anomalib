@@ -1,4 +1,4 @@
-from typing import Any, Optional, Dict, Tuple
+from typing import Any, Optional, Dict, Tuple, List
 
 import timm
 import torch
@@ -88,6 +88,7 @@ class PatchBasedClassifier(Classifier):
             num_classes: int,
             input_size: Tuple[int, int],
             hidden_size: int,
+            layers: List[str],
             **kwargs):
         super().__init__(**kwargs)
 
@@ -96,17 +97,17 @@ class PatchBasedClassifier(Classifier):
         if backbone == "wide_resnet50_2":
             self.backbone = PatchcoreModel(
                 input_size=input_size,
-                layers=["layer2", "layer3"],
+                layers=layers,
                 backbone=backbone,
             )
             self.embedding_size = 1536
         elif backbone.startswith("vit_base"):
             self.backbone = PatchcoreModel(
                 input_size=input_size,
-                layers=[5, 9],
+                layers=layers,
                 backbone=backbone,
             )
-            self.embedding_size = 768 * 2
+            self.embedding_size = 768 * len(layers)
         else:
             raise ValueError(f"unsupported backbone model {backbone}")
 

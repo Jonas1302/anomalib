@@ -237,7 +237,7 @@ class LabeledPatchcore(PatchcoreModel):
         self.labels = set()
         self.most_common_anomaly_instead_of_highest_score = most_common_anomaly_instead_of_highest_score
 
-    def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None, \
+    def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None,
                 get_anomaly_patch_map: bool = False) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
         embeddings = self.get_embedding(input_tensor)
         batch_size, _, width, height = embeddings.shape
