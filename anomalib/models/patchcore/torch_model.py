@@ -4,10 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Union
 
-import cv2
+from jaxtyping import Bool, Float, Int
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -54,7 +53,8 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.register_buffer("memory_bank", Tensor())
         self.memory_bank: Tensor
 
-    def forward(self, input_tensor: Tensor, **kwargs) -> Optional[Tuple[Tensor, Tensor]]:
+    def forward(self, input_tensor: Float[Tensor, "b c w h"], **kwargs) \
+            -> Optional[Tuple[Tensor, Tensor]]:
         """Return Embedding during training, or a tuple of anomaly map and anomaly score during testing.
 
         Steps performed:
@@ -96,14 +96,14 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
             anomaly_map = self.anomaly_map_generator(patch_scores)
             return anomaly_map, anomaly_score
 
-    def get_embedding(self, input_tensor: Tensor) -> Tensor:
+    def get_embedding(self, input_tensor: Float[Tensor, "b _ w h"]) -> Float[Tensor, "b f p p"]:
         """Extracts the features from the feature_extractor and creates the embedding."""
         if self.tiler:
             input_tensor = self.tiler.tile(input_tensor)
 
         # extract the features
         with torch.no_grad():
-            features: Dict[str, Tensor] = self.feature_extractor(input_tensor)
+            features: Dict[str, Float[Tensor, "b _ _ _"]] = self.feature_extractor(input_tensor)
 
         # filter and pool the features
         if self.locally_aware_patch_features in [True, "true"]:
@@ -113,7 +113,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
                         for layer, feature in features.items()}
 
         # create embeddings from the features
-        embedding = features[str(self.layers[0])]
+        embedding: Float[Tensor, "b _ p p"] = features[str(self.layers[0])]
         for layer in self.layers[1:]:
             layer_embedding = features[str(layer)]
             layer_embedding = F.interpolate(layer_embedding, size=embedding.shape[-2:], mode="nearest")
@@ -129,7 +129,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         self.memory_bank = self.coreset_sampling.get_coreset()
 
     @staticmethod
-    def reshape_embedding(embedding: Tensor) -> Tensor:
+    def reshape_embedding(embedding: Float[Tensor, "b f p p"]) -> Float[Tensor, "b*p*p f"]:
         """Reshape Embedding.
 
         Reshapes Embedding to the following format:
@@ -146,7 +146,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         return embedding
 
     @staticmethod
-    def nearest_neighbors(embedding: Tensor, n_neighbors: int, memory_bank: Tensor) -> Tuple[Tensor, Tensor]:
+    def nearest_neighbors(embedding: Float[Tensor, "b*p*p f"], n_neighbors: int, memory_bank: Tensor) -> Tuple[Tensor, Tensor]:
         """Nearest Neighbours using brute force method and euclidean norm.
 
         Args:
@@ -166,7 +166,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         return patch_scores, locations
 
     def compute_anomaly_score(self, patch_scores: Tensor, locations: Tensor, embedding: Tensor,
-                              memory_bank: Tensor, mode=torch.argmax) -> Dict[str, Tensor]:
+                              memory_bank: Tensor, mode=torch.argmax) -> Tensor:
         """Compute Image-Level Anomaly Score.
 
         Args:
@@ -199,7 +199,8 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         score = weights * score  # s in the paper
         return score
 
-    def compute_anomaly_score_map(self, patch_scores: Tensor, locations: Tensor, embedding: Tensor, memory_bank: Tensor) -> Tensor:
+    def compute_anomaly_score_map(self, patch_scores: Float[Tensor, "b p*p"], locations: Float[Tensor, "b p*p"],
+                                  embedding: Float[Tensor, "p*p f"], memory_bank: Tensor) -> Float[Tensor, "b p*p"]:
         """Compute the anomaly score for each patch."""
         # Don't need to compute weights if num_neighbors is 1
         if self.num_neighbors == 1:
@@ -228,22 +229,26 @@ class LabeledPatchcore(PatchcoreModel):
     per anomaly type for each patch.
     """
 
-    def __init__(self, *args, anomaly_threshold: float, most_common_anomaly_instead_of_highest_score: bool, **kwargs):
+    def __init__(self, *args, anomaly_threshold: float, num_classes: int, **kwargs):
         super().__init__(*args, **kwargs)
         del self.memory_bank
         self.anomaly_threshold = anomaly_threshold
+        self.num_classes = num_classes
         self.memory_banks = LabeledPatchcore.MemoryBanks(self)
+        self.coreset_sampling.min_num_embeddings = 1000  # use at least 1000 embeddings from each class (if possible)
         self.coreset_samplings: Dict[str, KCenter] = {}  # will contain one entry per label
-        self.labels = set()
-        self.most_common_anomaly_instead_of_highest_score = most_common_anomaly_instead_of_highest_score
 
-    def forward(self, input_tensor: Tensor, ground_truths: Optional[Tensor] = None, labels: Optional[Tensor] = None,
-                get_anomaly_patch_map: bool = False) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
-        embeddings = self.get_embedding(input_tensor)
+    def forward(self, input_tensor: Float[Tensor, "b _ w h"], ground_truths: Optional[Float[Tensor, "b w h"]] = None,
+                labels: Optional[Int[Tensor, "b"]] = None) \
+            -> Union[None,
+                     Tuple[Float[Tensor, "b c w h"], Float[Tensor, "b c"]],
+                     Tuple[Float[Tensor, "b c w h"], Float[Tensor, "b c"], Float[Tensor, "b c p p"]]]:
+        embeddings: Float[Tensor, "b f p p"] = self.get_embedding(input_tensor)
         batch_size, _, width, height = embeddings.shape
 
         if self.training:
             for i in range(batch_size):
+                embedding: Float[Tensor, "_ f"]
                 if labels[i] != 0:
                     # only add anomalous embeddings
                     _, embedding = separate_anomaly_embeddings(embeddings[i], ground_truths[i], self.anomaly_threshold)
@@ -252,68 +257,60 @@ class LabeledPatchcore(PatchcoreModel):
                 # Note: `self.coreset_sampling` is used as an empty blueprint, it allows us to share its projection
                 #   model across all samplings by copying it
                 self.coreset_samplings.setdefault(labels[i].item(), copy.copy(self.coreset_sampling)).update(embedding)
-                self.labels.add(labels[i].item())
+                assert 0 <= labels[i] < self.num_classes, f"{labels[i]=}"
             return
         else:
             results = []
             for i in range(batch_size):
-                embedding = self.reshape_embedding(embeddings[i].unsqueeze(0))
-                results.append(self._forward_single(embedding, width, height, get_anomaly_patch_map))
+                embedding: Float[Tensor, "p*p f"] = self.reshape_embedding(embeddings[i].unsqueeze(0))
+                results.append(self._forward_single(embedding, width, height))
 
             return tuple(map(torch.cat, zip(*results)))
 
-    def _forward_single(self, embedding: Tensor, width: int, height: int, get_anomaly_patch_map: bool) \
-            -> Tuple[Tensor, Tensor, Tensor]:
+    def _forward_single(self, embedding: Float[Tensor, "p*p f"], width: int, height: int) \
+            -> Union[Tuple[Float[Tensor, "1 c w h"], Float[Tensor, "1 c"]],
+                     Tuple[Float[Tensor, "1 c w h"], Float[Tensor, "1 c"], Float[Tensor, "1 c p p"]]]:
         """Forwards an embedding with batch size 1.
 
         Args:
             embedding (Tensor): embedding with batch size 1
             width, height: number of patches per row and column
-            get_patch_anomaly_map: whether to also return the unscaled version of the anomaly map
         Returns:
             Tuple[Tensor, Tensor, Tensor]: anomaly maps (one per label), anomaly score (one per label) as normalized
                 score in [0, 1] for the predicted label and zero for all others and the unscaled anomaly map with one
                 entry per patch; all with batch-size 1
         """
         device = embedding.device
-        closest_results: Dict[int, Tensor] = {}
-        index_to_label: List[int] = []
+        anomaly_patch_maps: Dict[int, Float[Tensor, "1 p*p"]] = {}
 
         # collect the anomaly scores for each patch and label
-        for i, label in enumerate(self.labels):
+        for i in range(self.num_classes):
             # apply nearest neighbor search
-            patch_scores, locations = self.nearest_neighbors(embedding=embedding, n_neighbors=1, memory_bank=self.memory_banks[label])
+            patch_scores, locations = self.nearest_neighbors(embedding=embedding, n_neighbors=1, memory_bank=self.memory_banks[i])
             # reshape to batch dimension
-            patch_scores = patch_scores.reshape((1, -1))
-            locations = locations.reshape((1, -1))
+            patch_scores: Float[Tensor, "1 p*p"] = patch_scores.reshape((1, -1))
+            locations: Float[Tensor, "1 p*p"] = locations.reshape((1, -1))
             # compute weighted anomaly score for each patch
-            # TODO: this step seems to barely make a difference
-            scores = self.compute_anomaly_score_map(patch_scores, locations, embedding, self.memory_banks[label])
-            closest_results[label] = scores
-            index_to_label.append(label)  # later, we can simply use `index_to_label[index]` because the entries have the same order as in `closest_results`
+            scores: Float[Tensor, "1 p*p"] = self.compute_anomaly_score_map(patch_scores, locations, embedding, self.memory_banks[i])
+            anomaly_patch_maps[i] = scores
 
         # lowest anomaly scores for each patch
-        good_anomaly_map = torch.cat(list(closest_results.values())[1:]).min(dim=0)[0]
-        # calculate anomaly map per label
-        anomaly_maps = torch.stack([
-            self._get_anomaly_map(good_anomaly_map, closest_results[0]) if i == 0 else
-            self._get_anomaly_map(closest_results[0], closest_results[i])
-            for i in self.labels
+        closest_anomaly_map: Float[Tensor, "p*p"] = torch.cat(list(anomaly_patch_maps.values())[1:]).min(dim=0)[0]
+        # calculate anomaly map per label; values are between 0 and 1 where a higher value means closer to i-th coreset
+        normed_anomaly_patch_maps: Float[Tensor, "c 1 p*p"] = torch.stack([
+            self._get_anomaly_map(closest_anomaly_map, anomaly_patch_maps[0]) if i == 0 else
+            self._get_anomaly_map(anomaly_patch_maps[0], anomaly_patch_maps[i])
+            for i in range(self.num_classes)
         ])
-        anomaly_maps = anomaly_maps.reshape((len(self.labels), 1, width, height))
+        normed_anomaly_patch_maps: Float[Tensor, "c 1 p p"] = normed_anomaly_patch_maps.reshape((self.num_classes, 1, width, height))
 
-        anomaly_score = torch.zeros(1, len(self.labels))
-        for l in self.labels:
-            anomaly_score[0, l] = anomaly_maps[l].max() if l != 0 else anomaly_maps[0].min()
-
-        resized_anomaly_maps = self.anomaly_map_generator(anomaly_maps).permute(1, 0, 2, 3)
-        if get_anomaly_patch_map:
-            anomaly_maps = anomaly_maps.permute(1, 0, 2, 3)
-            return resized_anomaly_maps.to(device), anomaly_score.to(device), anomaly_maps.to(device)
-        return resized_anomaly_maps.to(device), anomaly_score.to(device)
+        normed_anomaly_maps: Float[Tensor, "1 c w h"] = self.anomaly_map_generator(normed_anomaly_patch_maps).permute(1, 0, 2, 3)
+        normed_anomaly_patch_maps: Float[Tensor, "1 c p p"] = normed_anomaly_patch_maps.permute(1, 0, 2, 3)
+        return normed_anomaly_maps.to(device), normed_anomaly_patch_maps.to(device)
 
     @staticmethod
     def _get_anomaly_map(reference_map: Tensor, anomaly_map: Tensor) -> Tensor:
+        """Return a normed (values in [0, 1]) anomaly map, whereas a higher values means closer to `anomaly_map`."""
         return reference_map / (reference_map + anomaly_map)
 
     def calculate_coreset(self):

@@ -1,5 +1,6 @@
 from typing import Any, Optional, Dict, Tuple, List
 
+from jaxtyping import Bool, Float
 import timm
 import torch
 import torchmetrics
@@ -8,6 +9,8 @@ from torch import Tensor
 from anomalib.models import AnomalyModule
 from anomalib.models.patchcore.torch_model import PatchcoreModel
 
+from anomalib.models.patchcore.utils import process_pred_masks, process_label_and_score
+
 
 class Classifier(AnomalyModule):
     def __init__(self, lr: float, **kwargs):
@@ -15,38 +18,29 @@ class Classifier(AnomalyModule):
         self.lr = lr
         self.loss = torch.nn.functional.cross_entropy
         self.accuracy = torchmetrics.Accuracy()
-        self.image_threshold = None
-        self.pixel_threshold = None
-    
-    def _compute_adaptive_threshold(self, outputs):
-        pass
-    
+
     def training_step(self, batch, batch_idx, log=True, log_prefix="") -> Dict:
         batch_size = len(batch["label"])
-        predictions: Tensor = self(batch["image"])
+        predictions: Float[Tensor, "b c"] = self(batch["image"])
         # use index 0 for weight because there will be `batch_size` number of identical tensors concatenated together
         loss = self.loss(predictions, batch["label"], weight=1 / batch["images_per_class"][0])
         accuracy = self.accuracy(predictions, batch["label"])
 
         if log:
-            self.log(f"{log_prefix}loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
-            self.log(f"{log_prefix}accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
+            self.log(f"{log_prefix}loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
+            self.log(f"{log_prefix}accuracy", accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
         
         batch["loss"] = loss
-        batch["pred_scores"] = predictions.detach().clone()  # the original tensor must remain unchanged for gradient computation
+        batch["pred_scores"] = torch.nn.functional.softmax(predictions.detach().clone(), dim=-1)  # the original tensor must remain unchanged for gradient computation
         
         label_mapping = self.trainer.datamodule.label_mapping
         batch["label_mapping"] = label_mapping
         
         batch["pred_labels"] = []
-        # pred_scores_normed = (prediction - self.image_threshold.value) / (1 - self.image_threshold.value)
-        
         for i in range(batch_size):
-            # label = 0 if pred_scores_normed[i].max() < 0 else pred_scores_normed[i].argmax().item()
             label = predictions[i].argmax()
             batch["pred_labels"].append(label_mapping[label.cpu().item()])
-            # batch["pred_scores"][i, torch.arange(0, len(batch["pred_scores"][i])) != label] = 0  # set all to zero except label
-        
+
         return batch
     
     def validation_step(self, batch, batch_idx) -> Dict:
@@ -61,7 +55,7 @@ class Classifier(AnomalyModule):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
     
 
-class ResnetClassifier(Classifier):
+class TransferLearningClassifier(Classifier):
     def __init__(self, backbone: str, num_classes: int, **kwargs):
         super().__init__(**kwargs)
         
@@ -69,7 +63,6 @@ class ResnetClassifier(Classifier):
             self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
             self.pretrained_model.fc = torch.nn.Identity()  # replace last fully connected layer
             self.pretrained_model.requires_grad_(False)
-            self.pretrained_model.eval()  # TODO good or bad idea? Does it actually make a difference?
             self.classifier_model = torch.nn.Sequential(
                 torch.nn.Linear(2048, num_classes),
             )
@@ -77,6 +70,8 @@ class ResnetClassifier(Classifier):
             raise ValueError(f"unsupported backbone model '{backbone}'")
     
     def forward(self, input_tensor: Tensor) -> Tensor:
+        if self.freeze_batch_norm:
+            self.pretrained_model.eval()  # gets set to 'train' whenever 'self' is set to 'train', so this must be called every time
         output = self.pretrained_model(input_tensor)
         return self.classifier_model(output)
 
@@ -89,10 +84,12 @@ class PatchBasedClassifier(Classifier):
             input_size: Tuple[int, int],
             hidden_size: int,
             layers: List[str],
+            use_threshold: bool,
             **kwargs):
         super().__init__(**kwargs)
 
         self.num_classes = num_classes
+        self.use_threshold = use_threshold
 
         if backbone == "wide_resnet50_2":
             self.backbone = PatchcoreModel(
@@ -117,7 +114,7 @@ class PatchBasedClassifier(Classifier):
             torch.nn.Linear(hidden_size, num_classes),
         )
 
-    def forward(self, input_tensor: Tensor) -> Tensor:
+    def forward(self, input_tensor: Float[Tensor, "b _ w h"]) -> Float[Tensor, "b c"]:
         return self.classifier(input_tensor)
 
     def validation_step(self, batch, batch_idx) -> Dict:
@@ -125,50 +122,46 @@ class PatchBasedClassifier(Classifier):
             return self.training_step(batch, batch_idx, log=True, log_prefix="val_")
 
     def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None, log=False) -> Dict:
-        predictions = []
-        anomaly_maps = []
-
-        for i in range(len(batch["image"])):
-            embedding = self.extract_embeddings(batch["image"][i])
-            batch_size, num_features, width, height = embedding.shape
-            assert batch_size == 1 and num_features == self.embedding_size, f"{batch_size=}; {num_features=}"
-            embedding = PatchcoreModel.reshape_embedding(embedding)  # shape: [1 * width * height, num_features]
-            prediction: Tensor = torch.nn.functional.softmax(self(embedding))
-            predictions = predictions.reshape(1, width, height, self.num_classes)
-            predictions.append(prediction)  # map of class probabilities
-            anomaly_maps.append(self.backbone.anomaly_map_generator(prediction.permute(3, 0, 1, 2)).permute(1, 0, 2, 3))
-
-        predictions = torch.concat(predictions)
-        batch["anomaly_maps"] = torch.concat(anomaly_maps)
-        batch["pred_masks"] = batch["anomaly_maps"] > 0.5
-
-        label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
-        batch["label_mapping"] = label_mapping
-
-        batch["pred_scores"] = []
-        batch["pred_labels"] = []
-        for i in range(len(predictions)):
-            bincount = predictions[i].argmax(dim=-1).flatten().bincount()
-            if bincount[1:].any():  # any anomalous patches
-                label = bincount[1:].argmax().item() + 1
-            else:
-                label = 0
-            # array of length `num_classes` with max value for index of label and all other values 0
-            batch["pred_scores"].append([predictions[i, :, :, j].max().item() if j == label else 0 for j in range(len(label_mapping))])
-            batch["pred_labels"].append(label_mapping[label])
-        batch["pred_scores"] = torch.tensor(batch["pred_scores"], device=self.device)
+        anomaly_maps, anomaly_patch_maps = self.extract_anomaly_maps(batch)
+        threshold = self.image_threshold if self.use_threshold else None
+        pred_masks, pred_patch_masks = process_pred_masks(anomaly_maps, anomaly_patch_maps, batch, threshold)
+        process_label_and_score(anomaly_patch_maps, pred_patch_masks, batch, self.trainer)
 
         loss = self.loss(batch["pred_scores"], batch["label"], weight=1 / batch["images_per_class"][0])
         accuracy = self.accuracy(batch["pred_scores"], batch["label"])
         batch["loss"] = loss
 
         if log:
-            self.log(f"val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
-            self.log(f"val_accuracy", accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
+            self.log(f"val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
+            self.log(f"val_accuracy", accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
 
         return batch
 
-    def extract_embeddings(self, input_tensor: Tensor) -> Tensor:
+    def extract_anomaly_maps(self, batch):
+        anomaly_maps: List[Float[Tensor, "1 c w h"]] = []
+        anomaly_patch_maps: List[Float[Tensor, "1 c p p"]] = []
+
+        for i in range(len(batch["image"])):
+            embedding: Float[Tensor, "1 f p p"] = self.extract_embeddings(batch["image"][i])
+            _batch_size, num_features, width, height = embedding.shape
+            assert _batch_size == 1 and num_features == self.embedding_size, f"{_batch_size=}; {num_features=}"
+            embedding: Float[Tensor, "p*p f"] = PatchcoreModel.reshape_embedding(embedding)
+
+            with torch.no_grad():
+                prediction: Float[Tensor, "p*p c"] = torch.nn.functional.softmax(self(embedding), dim=-1)
+
+            prediction: Float[Tensor, "1 c p p"] = prediction.reshape(1, width, height, self.num_classes).permute(0, 3, 1, 2)
+            anomaly_patch_maps.append(prediction)  # map of class probabilities
+            anomaly_maps.append(self.backbone.anomaly_map_generator(prediction.permute(1, 0, 2, 3)).permute(1, 0, 2, 3))
+
+        anomaly_maps: Float[Tensor, "b c w h"] = torch.concat(anomaly_maps)
+        anomaly_patch_maps: Float[Tensor, "b c p p"] = torch.concat(anomaly_patch_maps)
+
+        batch["anomaly_maps"] = anomaly_maps
+
+        return anomaly_maps, anomaly_patch_maps
+
+    def extract_embeddings(self, input_tensor: Float[Tensor, "b c w h"]) -> Float[Tensor, "b f p p"]:
         if len(input_tensor.shape) == 3:
             input_tensor = input_tensor.unsqueeze(0)
         return self.backbone.get_embedding(input_tensor)

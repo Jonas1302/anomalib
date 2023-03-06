@@ -1,10 +1,16 @@
 from typing import Tuple
 
 import cv2
+import numpy as np
 from torch import Tensor
+from jaxtyping import Bool, Float
 
 
-def separate_anomaly_embeddings(embedding: Tensor, ground_truth: Tensor, anomaly_threshold: float) -> Tuple[Tensor, Tensor]:
+def separate_anomaly_embeddings(
+        embedding: Float[Tensor, "f p p"],
+        ground_truth: Float[Tensor, "w h"],
+        anomaly_threshold: float
+) -> Tuple[Float[Tensor, "_ f"], Float[Tensor, "_ f"]]:
     """Split a single `embedding` into normal and anomalous based on `ground_truth` and `self.anomaly_threshold`.
 
     Args:
@@ -16,9 +22,9 @@ def separate_anomaly_embeddings(embedding: Tensor, ground_truth: Tensor, anomaly
         Tuple[Tensor, Tensor]: two tensors with the embeddings where rescaled ground truth is below/above the
             threshold, respectively; shape: [num_embeddings, num_features]
     """
-    embedding = embedding.permute(1, 2, 0)  # make channel-last
-    ground_truth = cv2.resize(ground_truth.cpu().numpy(), dsize=embedding.shape[:2], interpolation=cv2.INTER_AREA)
-    anomalous_indices = ground_truth >= anomaly_threshold
-    anomalous_embedding = embedding[anomalous_indices, :]
-    normal_embedding = embedding[~anomalous_indices, :]
+    embedding: Float[Tensor, "p p f"] = embedding.permute(1, 2, 0)  # make channel-last
+    ground_truth: Float[np.ndarray, "p p"] = cv2.resize(ground_truth.cpu().numpy(), dsize=embedding.shape[:2], interpolation=cv2.INTER_AREA)
+    anomalous_indices: Bool[np.ndarray, "p p"] = ground_truth >= anomaly_threshold
+    anomalous_embedding: Float[Tensor, "_ f"] = embedding[anomalous_indices, :]
+    normal_embedding: Float[Tensor, "_ f"] = embedding[~anomalous_indices, :]
     return normal_embedding, anomalous_embedding

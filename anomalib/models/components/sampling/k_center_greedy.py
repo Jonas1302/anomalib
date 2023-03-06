@@ -15,13 +15,14 @@ from anomalib.models.components.dimensionality_reduction import SparseRandomProj
 
 
 class KCenter(ABC):
-    def __init__(self, sampling_ratio: float) -> None:
+    def __init__(self, sampling_ratio: float, min_num_embeddings: int = 0) -> None:
         self._embedding: List[Tensor] = []
         self.sampling_ratio = sampling_ratio
+        self.min_num_embeddings = min_num_embeddings
         self.model = SparseRandomProjection(eps=0.9)
 
     def __copy__(self):
-        copy = self.__class__(self.sampling_ratio)
+        copy = self.__class__(self.sampling_ratio, self.min_num_embeddings)
         copy.model = self.model
         return copy
 
@@ -47,8 +48,7 @@ class KCenter(ABC):
     @property
     def coreset_size(self):
         num_embeddings = self.embedding.shape[0]
-        t = 1000  # threshold: add all embeddings if num_embeddings is below threshold
-        return int(max(min(num_embeddings, t), num_embeddings * self.sampling_ratio))
+        return int(max(min(num_embeddings, self.min_num_embeddings), num_embeddings * self.sampling_ratio))
 
     @abstractmethod
     def get_coreset(self):
@@ -62,8 +62,8 @@ class KCenterGreedyBulk(KCenter):
         sampling_ratio (float): Ratio to choose coreset size from the embedding size.
     """
 
-    def __init__(self, sampling_ratio: float) -> None:
-        super().__init__(sampling_ratio)
+    def __init__(self, sampling_ratio: float, min_num_embeddings: int = 0) -> None:
+        super().__init__(sampling_ratio, min_num_embeddings)
 
         self.features: Tensor
         self.min_distances: Optional[Tensor] = None
@@ -171,8 +171,8 @@ class KCenterGreedyBulk(KCenter):
 class KCenterGreedyOnline(KCenter):
     """Implements k-center-greedy method for incremental usage."""
 
-    def __init__(self, sampling_ratio: float) -> None:
-        super().__init__(sampling_ratio)
+    def __init__(self, sampling_ratio: float, min_num_embeddings: int = 0) -> None:
+        super().__init__(sampling_ratio, min_num_embeddings)
 
         self.reduced_coreset: List[Tensor] = []  # coreset with the reduced embeddings after applying the projection
         self.coreset: List[Tensor] = []  # M_C in the paper
@@ -238,7 +238,7 @@ class KCenterAll(KCenter):
 
     This is equivalent to `KCenterGreedyBulk(sampling_ratio=1.0)` but way faster because no actual subsampling happens.
     """
-    def __init__(self, sampling_ratio=None):
+    def __init__(self, sampling_ratio=None, min_num_embeddings=0):
         super().__init__(sampling_ratio=1.0)
 
     def get_coreset(self):

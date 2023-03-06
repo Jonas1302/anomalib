@@ -7,16 +7,16 @@ Paper https://arxiv.org/abs/2106.08265.
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import List, Tuple, Union, Dict, Any, Optional
+from typing import List, Tuple, Any, Optional
 
-import torch
-from omegaconf import DictConfig, ListConfig
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
+from jaxtyping import Float
 from torch import Tensor
 
 from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
-from anomalib.models.patchcore.classifier import ResnetClassifier, PatchBasedClassifier
+from anomalib.models.patchcore.classifier import TransferLearningClassifier, PatchBasedClassifier
 from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
+from anomalib.models.patchcore.utils import process_pred_masks, process_label_and_score
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class Patchcore(AnomalyModule):
         input_size: Tuple[int, int],
         backbone: str,
         layers: List[str],
+        num_classes: int,
         pre_trained: bool = True,
         coreset_sampling_ratio: float = 0.1,
         coreset_sampling_mode: str = "bulk",
@@ -49,7 +50,8 @@ class Patchcore(AnomalyModule):
         task: str = "segmentation",
         labeled_coreset: bool = False,
         anomaly_threshold: float = 0.1,
-        most_common_anomaly_instead_of_highest_score: bool = True,
+        *args,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.task = task
@@ -77,9 +79,8 @@ class Patchcore(AnomalyModule):
             locally_aware_patch_features=locally_aware_patch_features,
             coreset_sampling=coreset_sampling_class(coreset_sampling_ratio),
             anomaly_threshold=anomaly_threshold,
-            most_common_anomaly_instead_of_highest_score=most_common_anomaly_instead_of_highest_score,
+            num_classes=num_classes,
         )
-        self.most_common_anomaly_instead_of_highest_score = most_common_anomaly_instead_of_highest_score
 
     def configure_optimizers(self) -> None:
         """Configure optimizers.
@@ -120,6 +121,8 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, Any]: Image filenames, test images, GT and predicted label/masks
         """
+        anomaly_maps: Float[Tensor, "b c w h"]
+        anomaly_score: Float[Tensor, "b c"]
         anomaly_maps, anomaly_score = self.model(batch["image"])
         batch["anomaly_maps"] = anomaly_maps
         batch["pred_scores"] = anomaly_score
@@ -128,58 +131,22 @@ class Patchcore(AnomalyModule):
 
 
 class ClassificationPatchcore(Patchcore):
+    def __init__(self, use_threshold: bool = True, *args, **kwargs):
+        super().__init__(*args, use_threshold=use_threshold, **kwargs)
+        self.use_threshold = use_threshold
 
     def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None) -> Any:
-        """Step function called during :meth:`~pytorch_lightning.trainer.trainer.Trainer.predict`.
+        anomaly_maps, anomaly_patch_maps = self.model(batch["image"])
+        batch["anomaly_maps"] = anomaly_maps
 
-        By default, it calls :meth:`~pytorch_lightning.core.lightning.LightningModule.forward`.
-        Override to add any processing logic.
+        threshold = self.image_threshold if self.use_threshold else None
+        pred_masks, pred_patch_masks = process_pred_masks(anomaly_maps, anomaly_patch_maps, batch, threshold)
+        process_label_and_score(anomaly_patch_maps, pred_patch_masks, batch, self.trainer)
 
-        Args:
-            batch (Tensor): Current batch
-            batch_idx (int): Index of current batch
-            _dataloader_idx (int): Index of the current dataloader
+        return batch
 
-        Return:
-            Predicted output
-        """
-        anomaly_maps, anomaly_score, anomaly_patch_maps = self.model(batch["image"], get_anomaly_patch_map=True)
-        outputs = batch
-        outputs["anomaly_maps"] = anomaly_maps
-        outputs["pred_scores"] = anomaly_score
-
-        label_mapping = self.trainer.datamodule.label_mapping  # add for better visualization
-        outputs["label_mapping"] = label_mapping
-
-        if len(self.image_threshold.value.shape) > 0:
-            pred_masks = outputs["anomaly_maps"].permute(0, 2, 3, 1) >= self.image_threshold.value
-            pred_masks = pred_masks.permute(0, 3, 1, 2)  # permute back to original shape
-            pred_patch_masks = anomaly_patch_maps.permute(0, 2, 3, 1) >= self.image_threshold.value
-            pred_patch_masks = pred_patch_masks.permute(0, 3, 1, 2)
-        else:
-            pred_masks = outputs["anomaly_maps"] >= self.image_threshold.value
-            pred_patch_masks = anomaly_patch_maps >= self.image_threshold.value
-        outputs["pred_masks"] = pred_masks
-
-        pred_scores_normed = outputs["pred_scores"] - self.image_threshold.value
-        outputs["pred_labels"] = []
-
-        for i in range(len(pred_masks)):
-            if self.most_common_anomaly_instead_of_highest_score:
-                bincount = torch.stack([pred_patch_masks[i, j].sum() for j in range(len(pred_patch_masks[i]))])
-                if bincount[1:].any():  # any anomalous patches
-                    label = bincount[1:].argmax().item() + 1
-                else:
-                    label = 0
-            else:
-                if pred_scores_normed[i].max() < 0:  # all anomaly scores are below threshold => good
-                    label = 0
-                else:
-                    label = pred_scores_normed[i].argmax().item()
-            outputs["pred_labels"].append(label_mapping[label])
-            outputs["pred_scores"][i, torch.arange(0, len(pred_masks[i])) != label] = 0  # set all to zero except label
-
-        return outputs
+    def validation_step(self, batch, _):
+        return self.predict_step(batch, _)
 
 
 class PatchcoreLightning:
@@ -201,8 +168,8 @@ class PatchcoreLightning:
             model_type = hparams.model.get("type", "labeled-coreset")
             if model_type in ["embedding", "labeled-coreset"]:
                 cls2 = ClassificationPatchcore
-            elif model_type == "finetuned-cnn":
-                cls2 = ResnetClassifier
+            elif model_type in ["finetuned-cnn", "transfer-learning"]:
+                cls2 = TransferLearningClassifier
             elif model_type == "embedding-mlp":
                 cls2 = PatchBasedClassifier
             else:
@@ -223,10 +190,10 @@ class PatchcoreLightning:
             task=hparams.dataset.get("task", "segmentation"),
             labeled_coreset=hparams.model.get("labeled_coreset", False),
             anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
-            most_common_anomaly_instead_of_highest_score=hparams.model.get("most_common_anomaly_instead_of_highest_score", True),
             num_classes=hparams.dataset.get("num_classes", None),
             lr=hparams.model.get("lr"),
             hidden_size=hparams.model.get("hidden_size"),
+            use_threshold=hparams.model.use_threshold,
         )
         obj.save_hyperparameters(hparams)
 

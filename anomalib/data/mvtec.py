@@ -332,7 +332,7 @@ class MVTecDataset(VisionDataset):
             limit = _parse_limit(self.custom_mapping.limit_train_images, self.images_per_class)
             self.samples = self.samples.groupby("label").head(limit).reset_index(drop=True)
             self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
-            logger.warning(f"number of patches for {self.split}: {self.images_per_class}")
+            logger.warning(f"limited number of images for {self.split}: {self.images_per_class}")
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -396,7 +396,7 @@ class PatchwiseWrapper:
             embedding_extractor: EmbeddingExtractor,
             num_patches_per_dimension: int,
             anomaly_threshold: float,
-            use_coreset_subsampling: bool = False
+            use_coreset_subsampling: bool = False,
     ):
         assert dataset.task == "classification", "wrapper currently only implemented for classification"
         self.dataset = dataset
@@ -414,7 +414,7 @@ class PatchwiseWrapper:
         logger.warning(f"number of patches for {dataset.split}: {self.images_per_class}")
 
     def _create_item_map(self, dataset):
-        items_map: Dict[str, List[Dict[str, Union[str, Tensor]]]] = {i: [] for i in range(dataset.num_classes)}
+        items_map: Dict[int, List[Dict[str, Union[str, Tensor]]]] = {i: [] for i in range(dataset.num_classes)}
 
         for item in dataset:
             embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
@@ -427,13 +427,13 @@ class PatchwiseWrapper:
 
             for j in range(self.num_patches):
                 x, y = divmod(j, self.num_patches_per_dimension)
+
+                if item["label"] != 0 and continuous_mask[x, y] < self.anomaly_threshold:
+                    continue
+
                 subitem = {k: item[k] for k in ["label", "label_name"]}
                 subitem["patch_anomaly_value"] = continuous_mask[x, y]
                 subitem["image"] = embedding[j]
-
-                if subitem["label"] != 0 and subitem["patch_anomaly_value"] < self.anomaly_threshold:
-                    continue
-
                 items_map[subitem["label"]].append(subitem)
 
         return items_map
@@ -641,7 +641,7 @@ class MVTec(LightningDataModule):
             if self.create_validation_set:
                 self._val_data = self._create_dataset(self.pre_process_val, "val")
             else:
-                self._val_data = self.test_data
+                self._val_data = self._create_dataset(self.pre_process_val, "test")
         return self._val_data
 
     @property
@@ -656,7 +656,7 @@ class MVTec(LightningDataModule):
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
         """Get validation dataloader."""
-        return DataLoader(dataset=self.val_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
+        return DataLoader(self.val_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
         """Get test dataloader."""
