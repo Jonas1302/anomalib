@@ -194,6 +194,8 @@ class PatchcoreLightning:
             lr=hparams.model.get("lr"),
             hidden_size=hparams.model.get("hidden_size"),
             use_threshold=hparams.model.use_threshold,
+            dropout=hparams.model.use_dropout,
+            freeze_batch_norm=hparams.model.freeze_batch_norm,
         )
         obj.save_hyperparameters(hparams)
 

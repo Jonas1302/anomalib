@@ -13,9 +13,10 @@ from anomalib.models.patchcore.utils import process_pred_masks, process_label_an
 
 
 class Classifier(AnomalyModule):
-    def __init__(self, lr: float, **kwargs):
+    def __init__(self, lr: float, dropout: float, **kwargs):
         super().__init__()
         self.lr = lr
+        self.dropout = dropout
         self.loss = torch.nn.functional.cross_entropy
         self.accuracy = torchmetrics.Accuracy()
 
@@ -56,15 +57,25 @@ class Classifier(AnomalyModule):
     
 
 class TransferLearningClassifier(Classifier):
-    def __init__(self, backbone: str, num_classes: int, **kwargs):
+    def __init__(self, backbone: str, num_classes: int, freeze_batch_norm: bool, **kwargs):
         super().__init__(**kwargs)
+        self.freeze_batch_norm = freeze_batch_norm
         
         if backbone == "wide_resnet50_2":
             self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
             self.pretrained_model.fc = torch.nn.Identity()  # replace last fully connected layer
             self.pretrained_model.requires_grad_(False)
             self.classifier_model = torch.nn.Sequential(
+                torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
                 torch.nn.Linear(2048, num_classes),
+            )
+        elif backbone.startswith("vit_base"):
+            self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
+            self.pretrained_model.head = torch.nn.Identity()  # replace last fully connected layer
+            self.pretrained_model.requires_grad_(False)
+            self.classifier_model = torch.nn.Sequential(
+                torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
+                torch.nn.Linear(768, num_classes),
             )
         else:
             raise ValueError(f"unsupported backbone model '{backbone}'")
@@ -109,8 +120,10 @@ class PatchBasedClassifier(Classifier):
             raise ValueError(f"unsupported backbone model {backbone}")
 
         self.classifier = torch.nn.Sequential(
+            torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
             torch.nn.Linear(self.embedding_size, hidden_size),
             torch.nn.LeakyReLU(),
+            torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
             torch.nn.Linear(hidden_size, num_classes),
         )
 
