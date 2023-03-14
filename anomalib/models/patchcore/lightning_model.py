@@ -161,6 +161,7 @@ class PatchcoreLightning:
         # to mangle with the object's construction
         assert cls == PatchcoreLightning, "PatchcoreLightning cannot be subclassed (subclass would be ignored)"
 
+        additional_kwargs = {}
         task = hparams.dataset.get("task", "segmentation")
         if task == "segmentation":
             cls2 = Patchcore
@@ -170,6 +171,16 @@ class PatchcoreLightning:
                 cls2 = ClassificationPatchcore
             elif model_type in ["finetuned-cnn", "transfer-learning"]:
                 cls2 = TransferLearningClassifier
+            elif model_type == "transfer-learning+mlp":
+                cls2 = TransferLearningClassifier
+                additional_kwargs["use_mlp"] = True
+            elif model_type == "embedding-global-fc":
+                cls2 = TransferLearningClassifier
+                additional_kwargs["use_global_embedding"] = True
+            elif model_type == "embedding-global-mlp":
+                cls2 = TransferLearningClassifier
+                additional_kwargs["use_mlp"] = True
+                additional_kwargs["use_global_embedding"] = True
             elif model_type == "embedding-mlp":
                 cls2 = PatchBasedClassifier
             else:
@@ -196,6 +207,7 @@ class PatchcoreLightning:
             use_threshold=hparams.model.use_threshold,
             dropout=hparams.model.use_dropout,
             freeze_batch_norm=hparams.model.freeze_batch_norm,
+            **additional_kwargs,
         )
         obj.save_hyperparameters(hparams)
 

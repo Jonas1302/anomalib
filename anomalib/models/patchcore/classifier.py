@@ -12,6 +12,28 @@ from anomalib.models.patchcore.torch_model import PatchcoreModel
 from anomalib.models.patchcore.utils import process_pred_masks, process_label_and_score
 
 
+def get_classifier(embedding_size: int, num_classes: int, hidden_size: int = 0, dropout: float = 0, flatten: bool = False):
+    model = torch.nn.Sequential()
+
+    if flatten:
+        model.append(torch.nn.AdaptiveAvgPool2d((1, 1)))
+        model.append(torch.nn.Flatten())
+
+    if dropout:
+        model.append(torch.nn.Dropout(dropout))
+
+    if hidden_size == 0:
+        model.append(torch.nn.Linear(embedding_size, num_classes))
+    else:
+        model.append(torch.nn.Linear(embedding_size, hidden_size))
+        model.append(torch.nn.LeakyReLU())
+        if dropout:
+            model.append(torch.nn.Dropout(dropout))
+        model.append(torch.nn.Linear(hidden_size, num_classes))
+
+    return model
+
+
 class Classifier(AnomalyModule):
     def __init__(self, lr: float, dropout: float, **kwargs):
         super().__init__()
@@ -57,34 +79,52 @@ class Classifier(AnomalyModule):
     
 
 class TransferLearningClassifier(Classifier):
-    def __init__(self, backbone: str, num_classes: int, freeze_batch_norm: bool, **kwargs):
+    def __init__(self, backbone: str, num_classes: int, freeze_batch_norm: bool, hidden_size: int, layers: List[str],
+                 input_size: Tuple[int, int], use_mlp: bool = False, use_global_embedding: bool = False,
+                 locally_aware_patch_features: bool = True, **kwargs):
         super().__init__(**kwargs)
         self.freeze_batch_norm = freeze_batch_norm
-        
-        if backbone == "wide_resnet50_2":
-            self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
-            self.pretrained_model.fc = torch.nn.Identity()  # replace last fully connected layer
-            self.pretrained_model.requires_grad_(False)
-            self.classifier_model = torch.nn.Sequential(
-                torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
-                torch.nn.Linear(2048, num_classes),
+        flatten = False
+
+        if use_global_embedding:
+            if backbone == "wide_resnet50_2":
+                feature_size = 1536
+            elif backbone.startswith("vit_base"):
+                feature_size = 768 * len(layers)
+            else:
+                raise ValueError(f"unsupported backbone model {backbone}")
+
+            self.patchcore_model = PatchcoreModel(
+                input_size=input_size,
+                layers=layers,
+                backbone=backbone,
+                locally_aware_patch_features=locally_aware_patch_features,
             )
-        elif backbone.startswith("vit_base"):
-            self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
-            self.pretrained_model.head = torch.nn.Identity()  # replace last fully connected layer
-            self.pretrained_model.requires_grad_(False)
-            self.classifier_model = torch.nn.Sequential(
-                torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
-                torch.nn.Linear(768, num_classes),
-            )
+            self.pretrained_model = self.patchcore_model.get_embedding
+            self.freeze_batch_norm = False  # is always frozen by `PatchcoreModel.feature_extractor`
+            flatten = True
         else:
-            raise ValueError(f"unsupported backbone model '{backbone}'")
-    
+            if backbone == "wide_resnet50_2":
+                self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
+                self.pretrained_model.fc = torch.nn.Identity()  # replace last fully connected layer
+                self.pretrained_model.requires_grad_(False)
+                feature_size = 2048
+            elif backbone.startswith("vit_base"):
+                self.pretrained_model: torch.nn.Module = timm.create_model(backbone, pretrained=True)
+                self.pretrained_model.head = torch.nn.Identity()  # replace last fully connected layer
+                self.pretrained_model.requires_grad_(False)
+                feature_size = 768
+            else:
+                raise ValueError(f"unsupported backbone model '{backbone}'")
+
+        self.classifier = get_classifier(feature_size, num_classes, hidden_size if use_mlp else 0, self.dropout, flatten)
+
     def forward(self, input_tensor: Tensor) -> Tensor:
         if self.freeze_batch_norm:
             self.pretrained_model.eval()  # gets set to 'train' whenever 'self' is set to 'train', so this must be called every time
-        output = self.pretrained_model(input_tensor)
-        return self.classifier_model(output)
+        with torch.no_grad():
+            output = self.pretrained_model(input_tensor)
+        return self.classifier(output)
 
 
 class PatchBasedClassifier(Classifier):
@@ -103,29 +143,19 @@ class PatchBasedClassifier(Classifier):
         self.use_threshold = use_threshold
 
         if backbone == "wide_resnet50_2":
-            self.backbone = PatchcoreModel(
-                input_size=input_size,
-                layers=layers,
-                backbone=backbone,
-            )
             self.embedding_size = 1536
         elif backbone.startswith("vit_base"):
-            self.backbone = PatchcoreModel(
-                input_size=input_size,
-                layers=layers,
-                backbone=backbone,
-            )
             self.embedding_size = 768 * len(layers)
         else:
             raise ValueError(f"unsupported backbone model {backbone}")
 
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
-            torch.nn.Linear(self.embedding_size, hidden_size),
-            torch.nn.LeakyReLU(),
-            torch.nn.Dropout(self.dropout) if self.dropout else torch.nn.Identity(),
-            torch.nn.Linear(hidden_size, num_classes),
+        self.backbone = PatchcoreModel(
+            input_size=input_size,
+            layers=layers,
+            backbone=backbone,
         )
+
+        self.classifier = get_classifier(self.embedding_size, self.num_classes, hidden_size, self.dropout)
 
     def forward(self, input_tensor: Float[Tensor, "b _ w h"]) -> Float[Tensor, "b c"]:
         return self.classifier(input_tensor)

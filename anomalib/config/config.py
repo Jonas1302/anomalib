@@ -115,7 +115,7 @@ def get_configurable_parameters(
     weight_file: Optional[str] = None,
     config_filename: Optional[str] = "config",
     config_file_extension: Optional[str] = "yaml",
-    category_overwrite=None,
+    category_overwrite: Optional[str] = None,
 ) -> Union[DictConfig, ListConfig]:
     """Get configurable parameters.
 
@@ -157,6 +157,8 @@ def get_configurable_parameters(
         config.dataset.format = "mvtec"
     if isinstance(config.dataset.get("custom_mapping"), (str, Path)):
         config.dataset.custom_mapping = OmegaConf.load(config.dataset.custom_mapping)
+    if category_overwrite:
+        config.dataset.category = category_overwrite
 
     config = update_input_size_config(config)
 
@@ -165,7 +167,7 @@ def get_configurable_parameters(
 
     # add category subfolder if needed
     if config.dataset.format.lower() in ("btech", "mvtec"):
-        category = category_overwrite if category_overwrite else config.dataset.category
+        category = config.dataset.category
         project_path = project_path / category
 
     # set to False by default for backward compatibility
