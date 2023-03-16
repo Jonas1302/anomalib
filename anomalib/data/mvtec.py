@@ -173,7 +173,7 @@ def make_mvtec_dataset(
                     # mark the remaining test images as anomalous
                     samples.loc[samples.label == "good", "label_index"] = 1
                 else:
-                    raise Exception(f"unknown mode {class_mode} (must be either 'train', 'test' or 'ignore'")
+                    raise Exception(f"unknown mode {class_mode} (must be either 'normal', 'anomaly' or 'ignore'")
     else:
         label_mapping = {}
         i = 1
@@ -324,11 +324,17 @@ class MVTecDataset(VisionDataset):
             binary_label_indices=(task != "classification"),
         )
         self.num_classes = len(self.label_mapping) if self.task == "classification" else 1
-        self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
+        self.images_per_class = self._calculate_images_per_class()
         logger.warning(f"number of images for {split}: {self.images_per_class}")
 
+    def _calculate_images_per_class(self):
+        if self.task == "classification":
+            return np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
+        else:
+            return np.array([sum(self.samples.label_index == i) for i in set(self.samples.label_index)])
+
     def limit_patches(self):
-        if self.custom_mapping.limit_train_images is not False:
+        if self.custom_mapping and self.custom_mapping.limit_train_images is not False:
             limit = _parse_limit(self.custom_mapping.limit_train_images, self.images_per_class)
             self.samples = self.samples.groupby("label").head(limit).reset_index(drop=True)
             self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])

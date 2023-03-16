@@ -126,6 +126,7 @@ class Patchcore(AnomalyModule):
         anomaly_maps, anomaly_score = self.model(batch["image"])
         batch["anomaly_maps"] = anomaly_maps
         batch["pred_scores"] = anomaly_score
+        batch["label_mapping"] = self.trainer.datamodule.label_mapping  # add for better visualization
 
         return batch
 
@@ -204,9 +205,9 @@ class PatchcoreLightning:
             num_classes=hparams.dataset.get("num_classes", None),
             lr=hparams.model.get("lr"),
             hidden_size=hparams.model.get("hidden_size"),
-            use_threshold=hparams.model.use_threshold,
-            dropout=hparams.model.use_dropout,
-            freeze_batch_norm=hparams.model.freeze_batch_norm,
+            use_threshold=hparams.model.get("use_threshold"),
+            dropout=hparams.model.get("use_dropout"),
+            freeze_batch_norm=hparams.model.get("freeze_batch_norm"),
             **additional_kwargs,
         )
         obj.save_hyperparameters(hparams)

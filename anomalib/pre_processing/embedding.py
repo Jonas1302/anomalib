@@ -11,7 +11,7 @@ def separate_anomaly_embeddings(
         ground_truth: Float[Tensor, "w h"],
         anomaly_threshold: float
 ) -> Tuple[Float[Tensor, "_ f"], Float[Tensor, "_ f"]]:
-    """Split a single `embedding` into normal and anomalous based on `ground_truth` and `self.anomaly_threshold`.
+    """Split a single `embedding` into normal and anomalous based on `ground_truth` and `anomaly_threshold`.
 
     Args:
         embedding (Tensor): embeddings to be split into normal and anomalous; shape: [num_features, width, height]

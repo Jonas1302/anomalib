@@ -77,7 +77,7 @@ class MetricsConfigurationCallback(Callback):
             datamodule = pl_module.trainer.datamodule
             num_classes = datamodule.num_classes if hasattr(datamodule, "num_classes") else None
             pl_module.image_metrics = create_metric_collection(image_metric_names, "image_", num_classes)
-            pl_module.pixel_metrics = create_metric_collection(pixel_metric_names, "pixel_", num_classes)
+            pl_module.pixel_metrics = create_metric_collection(pixel_metric_names, "pixel_", None)
 
             if pl_module.image_threshold is not None:
                 pl_module.image_metrics.set_threshold(pl_module.image_threshold.value)

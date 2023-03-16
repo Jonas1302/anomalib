@@ -32,10 +32,16 @@ class AUROC(ROC):
 
         fpr, tpr = self._compute()
         # TODO: use stable sort after upgrading to pytorch 1.9.x (https://github.com/openvinotoolkit/anomalib/issues/92)
-        # only reorder if fpr is not increasing or decreasing
-        aucs = torch.tensor([auc(fpr, tpr, reorder=(torch.all(fpr.diff() <= 0) or torch.all(fpr.diff() >= 0)))
-                             for fpr, tpr in zip(fpr, tpr)])
-        return aucs if self.average in [None, "none"] else aucs.mean()
+        if isinstance(fpr, Tensor) and fpr.ndim <= 1:
+            # original anomalib behaviour
+            if not (torch.all(fpr.diff() <= 0) or torch.all(fpr.diff() >= 0)):
+                return auc(fpr, tpr, reorder=True)  # only reorder if fpr is not increasing or decreasing
+            return auc(fpr, tpr)
+        else:  # TODO binary and multiclass classification is currently distinguished by multiclass returning a list instead Tensor
+            assert isinstance(fpr, list)
+            # behaviour for multi-class classification
+            aucs = torch.tensor([auc(fpr, tpr, reorder=True) for fpr, tpr in zip(fpr, tpr)])
+            return aucs if self.average in [None, "none"] else aucs.mean()
 
     def update(self, preds: Tensor, target: Tensor) -> None:  # type: ignore
         """Update state with new values.
@@ -46,6 +52,10 @@ class AUROC(ROC):
             preds (Tensor): predictions of the model
             target (Tensor): ground truth targets
         """
+        if preds.ndim >= 4 and preds.shape[1] == 1:  # flatten if anomaly map with only one channel (original anomalib behaviour)
+            assert self.num_classes is None or self.num_classes == 1, f"{self.num_classes=} but binary classification is assumed"
+            preds = preds.flatten()
+            target = target.flatten()
         super().update(preds, target)
 
     def _compute(self) -> Tuple[Tensor, Tensor]:

@@ -167,8 +167,7 @@ def get_configurable_parameters(
 
     # add category subfolder if needed
     if config.dataset.format.lower() in ("btech", "mvtec"):
-        category = config.dataset.category
-        project_path = project_path / category
+        project_path = project_path / config.dataset.category
 
     # set to False by default for backward compatibility
     config.project.setdefault("unique_dir", False)
