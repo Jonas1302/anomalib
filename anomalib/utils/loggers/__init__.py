@@ -6,7 +6,7 @@
 import logging
 import os
 import warnings
-from typing import Iterable, List, Union
+from typing import Iterable, List, Union, Optional
 
 from omegaconf.dictconfig import DictConfig
 from omegaconf.listconfig import ListConfig
@@ -58,12 +58,14 @@ def configure_logger(level: Union[int, str] = logging.INFO):
 
 
 def get_experiment_logger(
-    config: Union[DictConfig, ListConfig]
+    config: Union[DictConfig, ListConfig],
+    overwrite_name: Optional[str] = None,
 ) -> Union[LightningLoggerBase, Iterable[LightningLoggerBase], bool]:
     """Return a logger based on the choice of logger in the config file.
 
     Args:
         config (DictConfig): config.yaml file for the corresponding anomalib model.
+        overwrite_name (str): name that should be used by the logger instead of the default one.
 
     Raises:
         ValueError: for any logger types apart from false and tensorboard
@@ -109,6 +111,8 @@ def get_experiment_logger(
                 if "category" not in config.dataset.keys()
                 else f"{config.dataset.category} {config.model.name}"
             )
+            if overwrite_name:
+                name = overwrite_name
             logger_list.append(
                 AnomalibWandbLogger(
                     project=config.dataset.name,

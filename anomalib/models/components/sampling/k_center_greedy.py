@@ -15,7 +15,7 @@ from anomalib.models.components.dimensionality_reduction import SparseRandomProj
 
 
 class KCenter(ABC):
-    def __init__(self, sampling_ratio: float, min_num_embeddings: int = 0) -> None:
+    def __init__(self, sampling_ratio: float, min_num_embeddings: int = 0):
         self._embedding: List[Tensor] = []
         self.sampling_ratio = sampling_ratio
         self.min_num_embeddings = min_num_embeddings
@@ -44,6 +44,13 @@ class KCenter(ABC):
                 del self._embedding  # release CUDA memory
                 self._embedding = [result.to(device)]
         return self._embedding[0]
+
+    @embedding.setter
+    def embedding(self, embedding: Optional[Tensor]):
+        if embedding is None:
+            self._embedding = []
+        else:
+            self._embedding = [embedding]
 
     @property
     def coreset_size(self):
@@ -222,6 +229,18 @@ class KCenterGreedyOnline(KCenter):
 
     def get_coreset(self):
         return torch.stack(self.coreset)
+
+
+class KCenterGreedyOnDemand(KCenterGreedyOnline):
+    """Subsampling method that updates the coreset whenever `.get_coreset()` is called with the recent embeddings."""
+
+    def update(self, embedding: Tensor):
+        super(KCenterGreedyOnline, self).update(embedding)  # adds `embedding` to `self.embedding`
+
+    def get_coreset(self):
+        super().update(self.embedding)  # calculates all stored embeddings in one bulk
+        self.embedding = None  # forget about old embeddings in case there'll be new ones
+        return super().get_coreset()
 
 
 class KCenterRandom(KCenter):

@@ -7,13 +7,13 @@ Paper https://arxiv.org/abs/2106.08265.
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from typing import List, Tuple, Any, Optional
+from typing import List, Tuple, Any, Optional, Dict
 
 from pytorch_lightning.utilities.cli import MODEL_REGISTRY
 from jaxtyping import Float
 from torch import Tensor
 
-from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterRandom, KCenterAll
+from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterGreedyOnDemand, KCenterRandom, KCenterAll
 from anomalib.models.patchcore.classifier import TransferLearningClassifier, PatchBasedClassifier
 from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
 from anomalib.models.patchcore.utils import process_pred_masks, process_label_and_score
@@ -60,6 +60,8 @@ class Patchcore(AnomalyModule):
             coreset_sampling_class = KCenterGreedyBulk
         elif coreset_sampling_mode == "online":
             coreset_sampling_class = KCenterGreedyOnline
+        elif coreset_sampling_mode == "ondemand":
+            coreset_sampling_class = KCenterGreedyOnDemand
         elif coreset_sampling_mode == "random":
             coreset_sampling_class = KCenterRandom
         elif coreset_sampling_mode == "all":
@@ -131,6 +133,24 @@ class Patchcore(AnomalyModule):
         return batch
 
 
+class MultiStepPatchcore(Patchcore):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert isinstance(self.model.coreset_sampling, KCenterGreedyOnDemand), f"{self.model.coreset_sampling=}"
+        self.training_batches: Dict[str, List[Dict]] = {"good": []}  # dict of batches with labels as keys
+
+    def training_step(self, batch, _batch_idx):
+        assert len(batch["label"]) == 1, "train batch size must be 1"
+        self.training_batches.setdefault(batch["label_name"][0], []).append(batch)
+
+    def on_validation_start(self):
+        for batches in self.training_batches.values():  # note: since we added "good" at creation, it'll be the first entry
+            self.model.train()
+            for batch in batches:
+                self.model(batch["image"], ground_truths=batch.get("mask"), labels=batch.get("label"))
+            self.model.eval()
+            self.model.calculate_coreset()
+
 class ClassificationPatchcore(Patchcore):
     def __init__(self, use_threshold: bool = True, *args, **kwargs):
         super().__init__(*args, use_threshold=use_threshold, **kwargs)
@@ -165,7 +185,13 @@ class PatchcoreLightning:
         additional_kwargs = {}
         task = hparams.dataset.get("task", "segmentation")
         if task == "segmentation":
-            cls2 = Patchcore
+            model_type = hparams.model.get("type", "normal")
+            if model_type == "normal":
+                cls2 = Patchcore
+            elif model_type == "multistep":
+                cls2 = MultiStepPatchcore
+            else:
+                raise ValueError(f"unknown model type {model_type}")
         elif task == "classification":
             model_type = hparams.model.get("type", "labeled-coreset")
             if model_type in ["embedding", "labeled-coreset"]:

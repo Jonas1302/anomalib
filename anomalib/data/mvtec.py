@@ -369,28 +369,27 @@ class MVTecDataset(VisionDataset):
             "images_per_class": self.images_per_class,
         }
 
-        if self.split in ["val", "test"] or self.task == "classification":
-            label_index = self.samples.label_index[index]
+        label_index = self.samples.label_index[index]
 
-            item["image_path"] = image_path
-            item["label"] = label_index
-            item["label_name"] = self.samples.label[index]
+        item["image_path"] = image_path
+        item["label"] = label_index
+        item["label_name"] = self.samples.label[index]
 
-            mask_path = self.samples.mask_path[index]
+        mask_path = self.samples.mask_path[index]
 
-            # Only anomalous (1) images have masks in MVTec AD dataset.
-            # Therefore, create empty masks for normal (0) images.
-            if label_index == 0:
-                mask = np.zeros(shape=image.shape[:2])
-            else:
-                mask = cv2.imread(mask_path, flags=0) / 255.0
+        # Only anomalous (1) images have masks in MVTec AD dataset.
+        # Therefore, create empty masks for normal (0) images.
+        if label_index == 0:
+            mask = np.zeros(shape=image.shape[:2])
+        else:
+            mask = cv2.imread(mask_path, flags=0) / 255.0
 
-            pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
+        pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
 
-            item["mask_path"] = mask_path
-            item["image"] = pre_processed["image"]
-            item["image_visualization"] = pre_processed_no_normalization["image"]
-            item["mask"] = pre_processed["mask"]
+        item["mask_path"] = mask_path
+        item["image"] = pre_processed["image"]
+        item["image_visualization"] = pre_processed_no_normalization["image"]
+        item["mask"] = pre_processed["mask"]
 
         return item
 
