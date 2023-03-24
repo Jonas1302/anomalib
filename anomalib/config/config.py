@@ -157,6 +157,8 @@ def get_configurable_parameters(
         config.dataset.format = "mvtec"
     if isinstance(config.dataset.get("custom_mapping"), (str, Path)):
         config.dataset.custom_mapping = OmegaConf.load(config.dataset.custom_mapping)
+        if hasattr(config.dataset.custom_mapping, "category"):
+            config.dataset.category = config.dataset.custom_mapping.category
     if category_overwrite:
         config.dataset.category = category_overwrite
 
@@ -167,7 +169,8 @@ def get_configurable_parameters(
 
     # add category subfolder if needed
     if config.dataset.format.lower() in ("btech", "mvtec"):
-        project_path = project_path / config.dataset.category
+        category = config.dataset.category
+        project_path = project_path / (category if isinstance(category, str) else "+".join(category))
 
     # set to False by default for backward compatibility
     config.project.setdefault("unique_dir", False)

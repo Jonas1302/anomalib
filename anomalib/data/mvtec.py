@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import OmegaConf, DictConfig, ListConfig
 from pandas.core.frame import DataFrame
 from pytorch_lightning.core.datamodule import LightningDataModule
 from pytorch_lightning.utilities.cli import DATAMODULE_REGISTRY
@@ -64,12 +64,12 @@ logger = logging.getLogger(__name__)
 
 def make_mvtec_dataset(
     path: Path,
+    categories: Union[str, List[str]],
     split: Optional[str] = None,
     split_ratio: float = 0.1,
     seed: Optional[int] = None,
     create_validation_set: bool = False,
     custom_mapping: Optional[DictConfig] = None,
-    category: str = None,
     binary_label_indices: bool = True,
 ) -> Tuple[DataFrame, Dict[int, str]]:
     """Create MVTec AD samples by parsing the MVTec AD data file structure.
@@ -87,6 +87,7 @@ def make_mvtec_dataset(
 
     Args:
         path (Path): Path to dataset
+        categories (Union[str, List[str]]): name of one or multiple categories
         split (str, optional): Dataset split (ie., either train or test). Defaults to None.
         split_ratio (float, optional): Ratio to split normal training images and add to the
             test set in case test set doesn't contain any normal images.
@@ -97,7 +98,6 @@ def make_mvtec_dataset(
             could set this flag to ``True``.
         custom_mapping (DictConfig, optional): Config which can be used to overwrite the default labels of an
             anomaly type or to ignore it.
-        category (str): name of the current category, used to acces the correct values/sub-dict from `custom_mapping`
         binary_label_indices (bool): whether to use only 0 (normal) and 1 (anomalous) for label indices or
             a separate number for each anomaly type.
 
@@ -122,11 +122,19 @@ def make_mvtec_dataset(
     Returns:
         DataFrame: an output dataframe containing samples for the requested split (ie., train or test)
     """
-    samples_list = sorted([(str(path),) + filename.parts[-3:] for filename in path.glob("**/*.png")])
-    if len(samples_list) == 0:
-        raise RuntimeError(f"Found 0 images in {path}")
+    if isinstance(categories, str):
+        categories = [categories]
 
-    samples = pd.DataFrame(samples_list, columns=["path", "split", "label", "image_path"])
+    samples_list = []
+    for category in categories:
+        category_path = path / category
+        samples_list.extend(sorted([(str(category_path), category, *filename.parts[-3:])
+                                    for filename in category_path.glob("**/*.png")]))
+
+    if len(samples_list) == 0:
+        raise RuntimeError(f"Found 0 images in {path} for {categories=}")
+
+    samples = pd.DataFrame(samples_list, columns=["path", "category", "split", "label", "image_path"])
     samples = samples[samples.split != "ground_truth"]
 
     # Create mask_path column
@@ -149,9 +157,14 @@ def make_mvtec_dataset(
         samples = split_normal_images_in_train_set(samples, split_ratio, seed)
 
     # Good images don't have mask
-    samples.loc[(samples.split == "test") & (samples.label == "good"), "mask_path"] = ""
+    samples.loc[samples.label == "good", "mask_path"] = ""
+    # store original label in case it's overwritten
+    samples["original_label"] = samples.label
 
-    if binary_label_indices:
+    if any([isinstance(label, DictConfig) for category in custom_mapping.custom_labels.values() for label in category.values()]):
+        # new format
+        samples, label_mapping = _apply_custom_mapping_v2(samples, categories, custom_mapping, binary_label_indices)
+    elif binary_label_indices:
         # Create label index for normal (0) and anomalous (1) images.
         samples.loc[(samples.label == "good"), "label_index"] = 0
         samples.loc[(samples.label != "good"), "label_index"] = 1
@@ -175,8 +188,12 @@ def make_mvtec_dataset(
                 else:
                     raise Exception(f"unknown mode {class_mode} (must be either 'normal', 'anomaly' or 'ignore'")
     else:
+        if len(categories) > 1:
+            raise NotImplementedError
+        category = categories[0]
         label_mapping = {}
         i = 1
+
         for label in set(samples.label):
             if custom_mapping.custom_labels[category].get(label) == "ignore":
                 samples = samples[samples.label != label]
@@ -192,6 +209,8 @@ def make_mvtec_dataset(
     samples.label_index = samples.label_index.astype(int)
 
     if create_validation_set:
+        if len(categories) > 1:
+            raise NotImplementedError
         samples = create_validation_set_from_test_set(samples, seed=seed)
 
     # Get the data frame for the split.
@@ -201,12 +220,63 @@ def make_mvtec_dataset(
 
     return samples, label_mapping
 
+def _apply_custom_mapping_v2(samples, categories, custom_mapping, binary_label_indices: bool):
+    """new mapping format"""
+    for category in categories:
+        for label in set(samples[samples.category == category].label):
+            if label not in custom_mapping.custom_labels[category]:
+                # remove label
+                samples = samples[(samples.category != category) | (samples.label != label)]
+                continue
 
-def _add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies):
+            class_properties = custom_mapping.custom_labels[category][label]
+            if "split" in class_properties:
+                split = class_properties["split"]
+                if isinstance(split, (list, tuple, ListConfig)):
+                    assert len(split) == 2 and "train" in split and "test" in split, f"unknown {split=}"
+                    if label != "good":  # "good" is already split into training and test data
+                        _add_anomaly_to_train(samples, label, custom_mapping.train_ratio_for_anomalies, category)
+                else:
+                    if label == "good":
+                        # discard entries from other split (to retain dataset somewhat balanced)
+                        samples = samples[(samples.category != category) | (samples.label != label) | (samples.split == split)]
+                    else:
+                        # put all entries into given split
+                        samples.loc[(samples.category == category) & (samples.label == label), "split"] = split
+
+            if "label" in class_properties:  # overwrite label name
+                #label_index = 0 if class_properties["label"] in ["good", "normal"] else 1
+                #samples.loc[(samples.category == category) & (samples.label == label), "label_index"] = label_index
+                samples.loc[(samples.category == category) & (samples.label == label), "label"] = class_properties["label"]
+
+    if binary_label_indices:
+        # Create label index for normal (0) and anomalous (1) images.
+        samples.loc[:, "label_index"] = 1
+        samples.loc[(samples.label == "good") | (samples.label == "normal"), "label_index"] = 0
+        label_mapping = {0: "normal", 1: "anomalous"}
+    else:
+        label_mapping = {}
+        i = 1
+
+        for label in set(samples.label):
+            if label in ["good", "normal"]:
+                samples.loc[(samples.label == label), "label_index"] = 0
+                label_mapping = {0: "good", **label_mapping}  # always make good '0' and always keep it as first entry
+            else:
+                samples.loc[(samples.label == label), "label_index"] = i
+                label_mapping[i] = label
+                i += 1
+
+    return samples, label_mapping
+
+def _add_anomaly_to_train(samples, class_label, train_ratio_for_anomalies, category=None):
     if class_label == "good":
         return  # "good" is in "train" by default
 
-    indices = (samples.label == class_label)
+    if category:
+        indices = ((samples.category == category) & (samples.label == class_label))
+    else:
+        indices = (samples.label == class_label)
     # note: changing `samples.label_index` is enough, we do not need to change `samples.label`
     samples.loc[indices, "label_index"] = 0
 
@@ -240,7 +310,7 @@ class MVTecDataset(VisionDataset):
     def __init__(
         self,
         root: Union[Path, str],
-        category: str,
+        categories: Union[str, List[str]],
         pre_process: PreProcessor,
         split: str,
         task: str = "segmentation",
@@ -298,16 +368,16 @@ class MVTecDataset(VisionDataset):
                 " This will lead to inconsistency between runs."
             )
 
-        if custom_mapping and custom_mapping.custom_labels[category] is None:
-            custom_mapping.custom_labels[category] = {}  # prevents additional checks for being `None`
+        if isinstance(categories, str):
+            categories = [categories]
 
-        assert (not custom_mapping) \
-               or custom_mapping.custom_labels[category].get("good") != "anomaly" \
-               or task == "classification", \
-               "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
+        for category in categories:
+            assert (not custom_mapping) \
+                   or custom_mapping.custom_labels[category].get("good") != "anomaly" \
+                   or task == "classification", \
+                   "cannot run task 'segmentation' if 'good' is considered anomalous, due to missing ground truth"
 
         self.root = Path(root) if isinstance(root, str) else root
-        self.category: str = category
         self.split = split
         self.task = task
         self.custom_mapping = custom_mapping
@@ -315,17 +385,17 @@ class MVTecDataset(VisionDataset):
         self.pre_process = pre_process
 
         self.samples, self.label_mapping = make_mvtec_dataset(
-            path=self.root / category,
+            path=self.root,
+            categories=categories,
             split=self.split,
             seed=seed,
             create_validation_set=create_validation_set,
             custom_mapping=custom_mapping,
-            category=category,
             binary_label_indices=(task != "classification"),
         )
-        self.num_classes = len(self.label_mapping) if self.task == "classification" else 1
+        self.num_classes = 1 if len(self.label_mapping) == 2 else len(self.label_mapping)
         self.images_per_class = self._calculate_images_per_class()
-        logger.warning(f"number of images for {split}: {self.images_per_class}")
+        logger.warning(f"number of images for {split}: {self.images_per_class} (from categories {sorted(set(self.samples.category))})")
 
     def _calculate_images_per_class(self):
         if self.task == "classification":
@@ -338,7 +408,7 @@ class MVTecDataset(VisionDataset):
             limit = _parse_limit(self.custom_mapping.limit_train_images, self.images_per_class)
             self.samples = self.samples.groupby("label").head(limit).reset_index(drop=True)
             self.images_per_class = np.array([sum(self.samples.label == label) for label in self.label_mapping.values()])
-            logger.warning(f"limited number of images for {self.split}: {self.images_per_class}")
+            logger.warning(f"limited number of images for {self.split}: {self.images_per_class} (from categories {sorted(set(self.samples.category))})")
 
     def __len__(self) -> int:
         """Get length of the dataset."""
@@ -357,24 +427,13 @@ class MVTecDataset(VisionDataset):
         if index >= len(self):
             raise IndexError
 
-        item: Dict[str, Union[str, Tensor]] = {}
 
         image_path = self.samples.image_path[index]
         image = read_image(image_path)
 
         pre_processed_no_normalization, pre_processed = self.pre_process(image=image, also_get_without_normalization=True)
-        item = {
-            "image": pre_processed["image"],
-            "image_visualization": pre_processed_no_normalization["image"],
-            "images_per_class": self.images_per_class,
-        }
 
         label_index = self.samples.label_index[index]
-
-        item["image_path"] = image_path
-        item["label"] = label_index
-        item["label_name"] = self.samples.label[index]
-
         mask_path = self.samples.mask_path[index]
 
         # Only anomalous (1) images have masks in MVTec AD dataset.
@@ -386,10 +445,18 @@ class MVTecDataset(VisionDataset):
 
         pre_processed_no_normalization, pre_processed = self.pre_process(image=image, mask=mask, also_get_without_normalization=True)
 
-        item["mask_path"] = mask_path
-        item["image"] = pre_processed["image"]
-        item["image_visualization"] = pre_processed_no_normalization["image"]
-        item["mask"] = pre_processed["mask"]
+        item: Dict[str, Union[str, Tensor]] = {
+            "image": pre_processed["image"],
+            "image_visualization": pre_processed_no_normalization["image"],
+            "images_per_class": self.images_per_class,
+            "image_path": image_path,
+            "label": label_index,
+            "label_name": self.samples.label[index],
+            "original_label_name": self.samples.original_label[index],
+            "category": self.samples.category[index],
+            "mask": pre_processed["mask"],
+            "mask_path": mask_path,
+        }
 
         return item
 
@@ -403,7 +470,6 @@ class PatchwiseWrapper:
             anomaly_threshold: float,
             use_coreset_subsampling: bool = False,
     ):
-        assert dataset.task == "classification", "wrapper currently only implemented for classification"
         self.dataset = dataset
         self.num_classes = dataset.num_classes
         self.label_mapping = dataset.label_mapping
@@ -414,12 +480,12 @@ class PatchwiseWrapper:
         self.use_coreset_subsampling = use_coreset_subsampling
 
         self.items_map = self._create_item_map(dataset)
-        self.images_per_class = torch.tensor([len(self.items_map[i]) for i in range(self.num_classes)])
+        self.images_per_class = torch.tensor([len(self.items_map[i]) for i in self.label_mapping])
 
-        logger.warning(f"number of patches for {dataset.split}: {self.images_per_class}")
+        logger.warning(f"number of patches for {dataset.split}: {self.images_per_class} (from categories {sorted(set(self.dataset.samples.category))})")
 
     def _create_item_map(self, dataset):
-        items_map: Dict[int, List[Dict[str, Union[str, Tensor]]]] = {i: [] for i in range(dataset.num_classes)}
+        items_map: Dict[int, List[Dict[str, Union[str, Tensor]]]] = {i: [] for i in dataset.label_mapping}
 
         for item in dataset:
             embedding: Tensor = self.embedding_extractor(item["image"].unsqueeze(0))
@@ -436,7 +502,7 @@ class PatchwiseWrapper:
                 if item["label"] != 0 and continuous_mask[x, y] < self.anomaly_threshold:
                     continue
 
-                subitem = {k: item[k] for k in ["label", "label_name"]}
+                subitem = {k: item[k] for k in ["category", "label", "label_name", "original_label_name"]}
                 subitem["patch_anomaly_value"] = continuous_mask[x, y]
                 subitem["image"] = embedding[j]
                 items_map[subitem["label"]].append(subitem)
@@ -462,7 +528,7 @@ class PatchwiseWrapper:
                 self.items_map[label] = values[:limit]
             self.images_per_class[label] = len(self.items_map[label])
 
-        logger.warning(f"limited number of patches for {self.dataset.split}: {self.images_per_class}")
+        logger.warning(f"limited number of patches for {self.dataset.split}: {self.images_per_class} (from categories {sorted(set(self.dataset.samples.category))})")
 
     def __len__(self):
         return sum(self.images_per_class)
@@ -471,7 +537,7 @@ class PatchwiseWrapper:
         if index >= len(self):
             raise IndexError
 
-        for i in range(self.num_classes):
+        for i in self.label_mapping:
             if index < self.images_per_class[i]:
                 item = self.items_map[i][index].copy()
                 item["images_per_class"] = self.images_per_class
@@ -488,7 +554,7 @@ class MVTec(LightningDataModule):
     def __init__(
         self,
         root: str,
-        category: str,
+        category: Union[str, List[str]],
         # TODO: Remove default values. IAAALD-211
         image_size: Optional[Union[int, Tuple[int, int]]] = None,
         train_batch_size: int = 32,
@@ -546,7 +612,6 @@ class MVTec(LightningDataModule):
 
         self.root = root if isinstance(root, Path) else Path(root)
         self.category = category
-        self.dataset_path = self.root / self.category
         self.transform_config_train = transform_config_train
         self.transform_config_val = transform_config_val
         self.image_size = image_size
@@ -576,7 +641,7 @@ class MVTec(LightningDataModule):
 
     def prepare_data(self) -> None:
         """Download the dataset if not available."""
-        if (self.root / self.category).is_dir():
+        if self.root.is_dir():
             logger.info("Found the dataset.")
         else:
             self.root.mkdir(parents=True, exist_ok=True)
@@ -625,7 +690,7 @@ class MVTec(LightningDataModule):
     def _create_dataset(self, pre_process: PreProcessor, split: str) -> MVTecDataset:
         return MVTecDataset(
             root=self.root,
-            category=self.category,
+            categories=self.category,
             pre_process=pre_process,
             split=split,
             task=self.task,
@@ -661,7 +726,7 @@ class MVTec(LightningDataModule):
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
         """Get validation dataloader."""
-        return DataLoader(self.val_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
+        return DataLoader(self.val_data, shuffle=True, batch_size=self.test_batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
         """Get test dataloader."""
