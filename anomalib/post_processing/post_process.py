@@ -71,16 +71,6 @@ def add_label(
     return image
 
 
-def add_normal_label(image: np.ndarray, confidence: Optional[float] = None):
-    """Adds the normal label to the image."""
-    return add_label(image, "normal", (225, 252, 134), confidence)
-
-
-def add_anomalous_label(image: np.ndarray, confidence: Optional[float] = None):
-    """Adds the anomalous label to the image."""
-    return add_label(image, "anomalous", (255, 100, 100), confidence)
-
-
 def add_class_label(image: np.ndarray, label: str, correct: bool, confidence: Optional[float] = None):
     """Adds the anomalous label to the image."""
     return add_label(image, label, (225, 252, 134) if correct else (255, 100, 100), confidence)

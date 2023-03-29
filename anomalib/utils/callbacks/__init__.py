@@ -92,6 +92,7 @@ def get_callbacks(config: Union[ListConfig, DictConfig]) -> List[Callback]:
         config.dataset.task,
         config.metrics.get("image", None),
         config.metrics.get("pixel", None),
+        config.metrics.get("prefix", ""),
     )
     callbacks.append(metrics_callback)
 

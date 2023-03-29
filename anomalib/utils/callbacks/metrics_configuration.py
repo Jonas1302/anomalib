@@ -28,6 +28,7 @@ class MetricsConfigurationCallback(Callback):
         task: str = "segmentation",
         image_metrics: Optional[List[str]] = None,
         pixel_metrics: Optional[List[str]] = None,
+        prefix: str = "",
     ):
         """Create image and pixel-level AnomalibMetricsCollection.
 
@@ -44,6 +45,7 @@ class MetricsConfigurationCallback(Callback):
         self.task = task
         self.image_metric_names = image_metrics
         self.pixel_metric_names = pixel_metrics
+        self.prefix = prefix
 
     def setup(
         self,
@@ -76,8 +78,10 @@ class MetricsConfigurationCallback(Callback):
         if isinstance(pl_module, AnomalyModule):
             datamodule = pl_module.trainer.datamodule
             num_classes = datamodule.num_classes if hasattr(datamodule, "num_classes") else None
-            pl_module.image_metrics = create_metric_collection(image_metric_names, "image_", num_classes)
-            pl_module.pixel_metrics = create_metric_collection(pixel_metric_names, "pixel_", None)
+            if num_classes == 2:
+                num_classes = 1  # binary classification uses only one output
+            pl_module.image_metrics = create_metric_collection(image_metric_names, f"{self.prefix}image_", num_classes)
+            pl_module.pixel_metrics = create_metric_collection(pixel_metric_names, f"{self.prefix}pixel_", None)
 
             if pl_module.image_threshold is not None:
                 pl_module.image_metrics.set_threshold(pl_module.image_threshold.value)

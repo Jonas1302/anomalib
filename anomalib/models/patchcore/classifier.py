@@ -174,6 +174,8 @@ class PatchBasedClassifier(Classifier):
 
     def validation_step(self, batch, batch_idx) -> Dict:
         with torch.no_grad():
+            if len(batch["image"].shape) == 4:  # revalidation with images
+                return self.predict_step(batch, batch_idx)
             return self.training_step(batch, batch_idx, log=True, log_prefix="val_")
 
     def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None, log=False) -> Dict:

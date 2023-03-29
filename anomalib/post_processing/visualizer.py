@@ -16,11 +16,7 @@ from skimage.segmentation import mark_boundaries
 from torch import Tensor
 
 from anomalib.data.utils import read_image
-from anomalib.post_processing.post_process import (
-    add_anomalous_label,
-    add_normal_label,
-    superimpose_anomaly_map, add_class_label,
-)
+from anomalib.post_processing.post_process import superimpose_anomaly_map, add_class_label
 
 
 @dataclass
@@ -144,15 +140,13 @@ class Visualizer:
         raise ValueError(f"Unknown visualization mode: {self.mode}")
 
     def _add_label(self, image: np.ndarray, image_result: ImageResult) -> np.ndarray:
-        if self.task == "classification":
-            return add_class_label(image, image_result.pred_label, image_result.pred_score == image_result.label)
-        else:
-            return add_class_label(
-                image=image,
-                label=image_result.label_mapping[int(image_result.pred_label)],
-                correct=image_result.pred_label == image_result.label,
-                confidence=image_result.pred_score,
-            )
+        assert isinstance(image_result.pred_label, int), f"{image_result.pred_label=}"
+        return add_class_label(
+            image=image,
+            label=image_result.label_mapping[int(image_result.pred_label)],
+            correct=image_result.pred_label == image_result.label,
+            confidence=image_result.pred_score,
+        )
 
     def _visualize_full(self, image_result: ImageResult) -> np.ndarray:
         """Generate the full set of visualization for an image.
@@ -189,8 +183,7 @@ class Visualizer:
                 # otherwise print separated heat maps and prediction masks
                 if image_result.heat_map is not None:
                     for i in range(len(image_result.heat_map)):
-                        visualization.add_image(self._add_label(image_result.heat_map[i], image_result),
-                                                f"Predicted Heat Map ({image_result.label_mapping[i]})")
+                        visualization.add_image(image_result.heat_map[i], f"Predicted Heat Map ({image_result.label_mapping[i]})")
                 if image_result.pred_mask is not None:
                     for i in range(len(image_result.pred_mask)):
                         visualization.add_image(image_result.pred_mask[i], color_map="gray", title="Predicted Mask")

@@ -50,7 +50,7 @@ class ImageVisualizerCallback(BaseVisualizerCallback):
         for i, image in enumerate(self.visualizer.visualize_batch(outputs)):
             filename = Path(outputs["image_path"][i])
             if self.save_images:
-                file_path = self.image_save_path / filename.parent.name / filename.name
+                file_path = self.image_save_path / outputs["label"][i] / f"{outputs['category']}_{filename.name}"
                 self.visualizer.save(file_path, image)
             if self.show_images:
                 self.visualizer.show(str(filename), image)
@@ -79,7 +79,12 @@ class ImageVisualizerCallback(BaseVisualizerCallback):
         for i, image in enumerate(self.visualizer.visualize_batch(outputs)):
             filename = Path(outputs["image_path"][i])
             if self.save_images:
-                file_path = self.image_save_path / filename.parent.name / filename.name
+                new_filename = filename.name
+#                if outputs["label_name"][i] != outputs["original_label_name"][i]:
+                new_filename = f"{outputs['original_label_name'][i]}_{new_filename}"
+#                if self.image_save_path.parts[-1] != outputs['category'][i]:
+                new_filename = f"{outputs['category'][i]}_{new_filename}"
+                file_path = self.image_save_path / outputs["label_name"][i] / new_filename
                 self.visualizer.save(file_path, image)
             if self.log_images:
                 self._add_to_logger(image, pl_module, trainer, filename)

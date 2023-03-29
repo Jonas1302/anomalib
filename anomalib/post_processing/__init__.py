@@ -6,8 +6,6 @@
 from .normalization import NormalizationMethod
 from .post_process import (
     ThresholdMethod,
-    add_anomalous_label,
-    add_normal_label,
     anomaly_map_to_color_map,
     compute_mask,
     superimpose_anomaly_map,
@@ -15,8 +13,6 @@ from .post_process import (
 from .visualizer import ImageResult, Visualizer
 
 __all__ = [
-    "add_anomalous_label",
-    "add_normal_label",
     "anomaly_map_to_color_map",
     "superimpose_anomaly_map",
     "compute_mask",
