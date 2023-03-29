@@ -152,9 +152,10 @@ class MultiStepPatchcore(Patchcore):
             self.model.calculate_coreset()
 
 class ClassificationPatchcore(Patchcore):
-    def __init__(self, use_threshold: bool = True, *args, **kwargs):
-        super().__init__(*args, use_threshold=use_threshold, **kwargs)
+    def __init__(self, num_classes: int, use_threshold: bool = True, *args, **kwargs):
+        super().__init__(*args, num_classes=num_classes, use_threshold=use_threshold, **kwargs)
         self.use_threshold = use_threshold
+        assert self.use_threshold or num_classes != 1, f"{self.use_threshold=}, {num_classes=}"
 
     def predict_step(self, batch: Any, batch_idx: int, _dataloader_idx: Optional[int] = None) -> Any:
         anomaly_maps, anomaly_patch_maps = self.model(batch["image"])
@@ -183,37 +184,29 @@ class PatchcoreLightning:
         assert cls == PatchcoreLightning, "PatchcoreLightning cannot be subclassed (subclass would be ignored)"
 
         additional_kwargs = {}
-        task = hparams.dataset.get("task", "segmentation")
-        if task == "segmentation":
-            model_type = hparams.model.get("type", "normal")
-            if model_type == "normal":
-                cls2 = Patchcore
-            elif model_type == "multistep":
-                cls2 = MultiStepPatchcore
-            else:
-                raise ValueError(f"unknown model type {model_type}")
-        elif task == "classification":
-            model_type = hparams.model.get("type", "labeled-coreset")
-            if model_type in ["embedding", "labeled-coreset"]:
-                cls2 = ClassificationPatchcore
-            elif model_type in ["finetuned-cnn", "transfer-learning"]:
-                cls2 = TransferLearningClassifier
-            elif model_type == "transfer-learning+mlp":
-                cls2 = TransferLearningClassifier
-                additional_kwargs["use_mlp"] = True
-            elif model_type == "embedding-global-fc":
-                cls2 = TransferLearningClassifier
-                additional_kwargs["use_global_embedding"] = True
-            elif model_type == "embedding-global-mlp":
-                cls2 = TransferLearningClassifier
-                additional_kwargs["use_mlp"] = True
-                additional_kwargs["use_global_embedding"] = True
-            elif model_type == "embedding-mlp":
-                cls2 = PatchBasedClassifier
-            else:
-                raise ValueError(f"unknown model type {model_type}")
+        model_type = hparams.model.get("type", "normal")
+        if model_type == "normal":
+            cls2 = Patchcore
+        elif model_type == "multistep":
+            cls2 = MultiStepPatchcore
+        elif model_type in ["embedding", "labeled-coreset"]:
+            cls2 = ClassificationPatchcore
+        elif model_type in ["finetuned-cnn", "transfer-learning"]:
+            cls2 = TransferLearningClassifier
+        elif model_type == "transfer-learning+mlp":
+            cls2 = TransferLearningClassifier
+            additional_kwargs["use_mlp"] = True
+        elif model_type == "embedding-global-fc":
+            cls2 = TransferLearningClassifier
+            additional_kwargs["use_global_embedding"] = True
+        elif model_type == "embedding-global-mlp":
+            cls2 = TransferLearningClassifier
+            additional_kwargs["use_mlp"] = True
+            additional_kwargs["use_global_embedding"] = True
+        elif model_type == "embedding-mlp":
+            cls2 = PatchBasedClassifier
         else:
-            raise ValueError(f"unknown task {task}")
+            raise ValueError(f"unknown {model_type=}")
 
         obj = cls2(
             input_size=hparams.model.input_size,

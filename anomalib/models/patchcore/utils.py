@@ -48,16 +48,23 @@ def process_label_and_score(
     pred_scores: Float[Tensor, "b c"] = torch.zeros(*anomaly_patch_maps.shape[:2], device=anomaly_patch_maps.device)
     pred_labels: List[int] = []
 
-    for i in range(len(anomaly_patch_maps)):
-        bincount = torch.stack([pred_patch_masks[i, j].sum() for j in range(len(pred_patch_masks[i]))])
-        if bincount[1:].any():  # any anomalous patches
-            label = bincount[1:].argmax().item() + 1
-            pred_scores[i][label] = anomaly_patch_maps[i, label].max().item()
-        else:  # classify as good
-            label = 0
-            # use `.min()` for good map because the worst patch is most important
-            pred_scores[i][label] = anomaly_patch_maps[i, label].min().item()
-        pred_labels.append(label_mapping[label])
+    batch_size, num_classes, _, _ = anomaly_patch_maps.shape
+    for i in range(batch_size):
+        bincount = torch.stack([pred_patch_masks[i, j].sum() for j in range(num_classes)])
+        assert len(bincount) == num_classes == pred_patch_masks.shape[1]
 
-    outputs["pred_scores"] = pred_scores
+        if num_classes == 1:  # binary classification
+            label = 1 if bincount[0] > 0 else 0
+            pred_scores[i][0] = anomaly_patch_maps[i, 0].max().item()
+        else:  # multiclass
+            if bincount[1:].any():  # any anomalous patches
+                label = bincount[1:].argmax().item() + 1
+                pred_scores[i][label] = anomaly_patch_maps[i, label].max().item()
+            else:  # classify as good
+                label = 0
+                # use `.min()` for good map because the worst patch is most important
+                pred_scores[i][label] = anomaly_patch_maps[i, label].min().item()
+        pred_labels.append(label)
+
+    outputs["pred_scores"] = pred_scores.squeeze()
     outputs["pred_labels"] = pred_labels

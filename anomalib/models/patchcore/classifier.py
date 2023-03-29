@@ -23,39 +23,43 @@ def get_classifier(embedding_size: int, num_classes: int, hidden_size: int = 0, 
         model.append(torch.nn.Dropout(dropout))
 
     if hidden_size == 0:
-        model.append(torch.nn.Linear(embedding_size, num_classes))
+        hidden_size = embedding_size
     else:
         model.append(torch.nn.Linear(embedding_size, hidden_size))
         model.append(torch.nn.LeakyReLU())
         if dropout:
             model.append(torch.nn.Dropout(dropout))
-        model.append(torch.nn.Linear(hidden_size, num_classes))
+
+    model.append(torch.nn.Linear(hidden_size, 1 if num_classes == 2 else num_classes))
 
     return model
 
 
 class Classifier(AnomalyModule):
-    def __init__(self, lr: float, dropout: float, **kwargs):
+    def __init__(self, lr: float, dropout: float, num_classes: int, **kwargs):
         super().__init__()
         self.lr = lr
         self.dropout = dropout
-        self.loss = torch.nn.functional.cross_entropy
+        self.num_classes = num_classes
+        self.loss = torch.nn.functional.cross_entropy if num_classes >= 2 else torch.nn.functional.binary_cross_entropy_with_logits
         self.accuracy = torchmetrics.Accuracy()
 
     def training_step(self, batch, batch_idx, log=True, log_prefix="") -> Dict:
         batch_size = len(batch["label"])
         predictions: Float[Tensor, "b c"] = self(batch["image"])
         # use index 0 for weight because there will be `batch_size` number of identical tensors concatenated together
-        loss = self.loss(predictions, batch["label"], weight=1 / batch["images_per_class"][0])
-        accuracy = self.accuracy(predictions, batch["label"])
+        loss = self._calculate_loss(predictions, batch["label"], self.trainer.datamodule.train_data.images_per_class)
 
         if log:
             self.log(f"{log_prefix}loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
-            self.log(f"{log_prefix}accuracy", accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=batch_size)
-        
+
         batch["loss"] = loss
-        batch["pred_scores"] = torch.nn.functional.softmax(predictions.detach().clone(), dim=-1)  # the original tensor must remain unchanged for gradient computation
-        
+        batch["pred_scores"] = predictions.detach().clone()  # the original tensor must remain unchanged for gradient computation
+        if self.num_classes > 1:  # multiclass
+            batch["pred_scores"] = torch.nn.functional.softmax(batch["pred_scores"], dim=-1)
+        else:
+            batch["pred_scores"] = torch.sigmoid(batch["pred_scores"]).squeeze()
+
         label_mapping = self.trainer.datamodule.label_mapping
         batch["label_mapping"] = label_mapping
         
@@ -65,7 +69,16 @@ class Classifier(AnomalyModule):
             batch["pred_labels"].append(label_mapping[label.cpu().item()])
 
         return batch
-    
+
+    def _calculate_loss(self, predictions, targets, images_per_class):
+        if self.num_classes == 1:
+            # pos_weight is num_negative/num_positive
+            # see https://pytorch.org/docs/stable/generated/torch.nn.BCEWithLogitsLoss.html
+            loss = self.loss(predictions.flatten(), targets.float(), pos_weight=images_per_class[0] / images_per_class[1])
+        else:
+            loss = self.loss(predictions, targets, weight=1 / images_per_class)
+        return loss
+
     def validation_step(self, batch, batch_idx) -> Dict:
         with torch.no_grad():
             return self.training_step(batch, batch_idx, log_prefix="val_")
@@ -76,13 +89,13 @@ class Classifier(AnomalyModule):
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
-    
+
 
 class TransferLearningClassifier(Classifier):
     def __init__(self, backbone: str, num_classes: int, freeze_batch_norm: bool, hidden_size: int, layers: List[str],
                  input_size: Tuple[int, int], use_mlp: bool = False, use_global_embedding: bool = False,
                  locally_aware_patch_features: bool = True, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(num_classes, **kwargs)
         self.freeze_batch_norm = freeze_batch_norm
         flatten = False
 
@@ -137,10 +150,9 @@ class PatchBasedClassifier(Classifier):
             layers: List[str],
             use_threshold: bool,
             **kwargs):
-        super().__init__(**kwargs)
-
-        self.num_classes = num_classes
+        super().__init__(num_classes=num_classes, **kwargs)
         self.use_threshold = use_threshold
+        assert self.use_threshold or num_classes != 1, f"{self.use_threshold=}, {num_classes=}"
 
         if backbone == "wide_resnet50_2":
             self.embedding_size = 1536
@@ -170,13 +182,11 @@ class PatchBasedClassifier(Classifier):
         pred_masks, pred_patch_masks = process_pred_masks(anomaly_maps, anomaly_patch_maps, batch, threshold)
         process_label_and_score(anomaly_patch_maps, pred_patch_masks, batch, self.trainer)
 
-        loss = self.loss(batch["pred_scores"], batch["label"], weight=1 / batch["images_per_class"][0])
-        accuracy = self.accuracy(batch["pred_scores"], batch["label"])
+        loss = self._calculate_loss(batch["pred_scores"], batch["label"], batch["images_per_class"][0])
         batch["loss"] = loss
 
         if log:
             self.log(f"val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
-            self.log(f"val_accuracy", accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=len(batch["label"]))
 
         return batch
 
@@ -191,7 +201,11 @@ class PatchBasedClassifier(Classifier):
             embedding: Float[Tensor, "p*p f"] = PatchcoreModel.reshape_embedding(embedding)
 
             with torch.no_grad():
-                prediction: Float[Tensor, "p*p c"] = torch.nn.functional.softmax(self(embedding), dim=-1)
+                prediction: Float[Tensor, "p*p c"] = self(embedding)
+                if self.num_classes > 1:  # apply softmax, but only for non-binary classification
+                    prediction = torch.nn.functional.softmax(prediction, dim=-1)
+                else:
+                    prediction = torch.sigmoid(prediction)
 
             prediction: Float[Tensor, "1 c p p"] = prediction.reshape(1, width, height, self.num_classes).permute(0, 3, 1, 2)
             anomaly_patch_maps.append(prediction)  # map of class probabilities
