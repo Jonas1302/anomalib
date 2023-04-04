@@ -20,6 +20,8 @@ class KCenter(ABC):
         self.sampling_ratio = sampling_ratio
         self.min_num_embeddings = min_num_embeddings
         self.model = SparseRandomProjection(eps=0.9)
+        self.uptodate = True
+        self.device = "cpu"
 
     def __copy__(self):
         copy = self.__class__(self.sampling_ratio, self.min_num_embeddings)
@@ -27,35 +29,38 @@ class KCenter(ABC):
         return copy
 
     def update(self, embedding: Tensor):
-        self._embedding.append(embedding)
+        self.device = embedding.device
+        self._embedding.append(embedding.cpu())
+        self.uptodate = False
 
     @property
     def embedding(self):
         if len(self._embedding) == 0:
             raise Exception("no embeddings added")
         if len(self._embedding) > 1:
-            try:
-                self._embedding = [torch.cat(self._embedding)]
-            except RuntimeError:
-                # RuntimeError may occur if CUDA runs out of memory
-                # we therefore try the operation again but on the CPU
-                device = self._embedding[0].device
-                result = torch.cat(tuple(map(Tensor.cpu, self._embedding)))
-                del self._embedding  # release CUDA memory
-                self._embedding = [result.to(device)]
-        return self._embedding[0]
+            self._embedding = [torch.cat(self._embedding)]
+        torch.cuda.empty_cache()  # clear as much space as possible
+        return self._embedding[0].to(self.device)
 
     @embedding.setter
     def embedding(self, embedding: Optional[Tensor]):
         if embedding is None:
             self._embedding = []
         else:
-            self._embedding = [embedding]
+            self.device = embedding.device
+            self._embedding = [embedding.cpu()]
+        self.uptodate = False
 
     @property
     def coreset_size(self):
         num_embeddings = self.embedding.shape[0]
         return int(max(min(num_embeddings, self.min_num_embeddings), num_embeddings * self.sampling_ratio))
+
+    def cleanup(self):
+        """Release memory, may prohibit further training/subsampling"""
+        assert self.uptodate
+        self._embedding = None
+        torch.cuda.empty_cache()
 
     @abstractmethod
     def get_coreset(self):
@@ -74,6 +79,7 @@ class KCenterGreedyBulk(KCenter):
 
         self.features: Tensor
         self.min_distances: Optional[Tensor] = None
+        self.coreset = None
 
     def reset_distances(self) -> None:
         """Reset minimum distances."""
@@ -166,13 +172,16 @@ class KCenterGreedyBulk(KCenter):
             >>> coreset.shape
             torch.Size([219, 1536])
         """
+        if self.uptodate:
+            return self.coreset
         if self.coreset_size == len(self.embedding):
             return self.embedding
 
         idxs = self.select_coreset_idxs(selected_idxs)
-        coreset = self.embedding[idxs]
+        self.coreset = self.embedding[idxs]
+        self.uptodate = True
 
-        return coreset
+        return self.coreset
 
 
 class KCenterGreedyOnline(KCenter):
@@ -188,7 +197,7 @@ class KCenterGreedyOnline(KCenter):
         """Return a new tensor containing the min distances for a random center."""
 
         if self.reduced_coreset:  # we already have some embeddings in the coreset
-            centers = torch.stack(self.reduced_coreset)
+            centers = torch.stack(self.reduced_coreset).to(self.device)
             min_distances = F.pairwise_distance(features, centers[0], p=2).reshape(-1, 1)
             for i in range(1, centers.shape[0]):
                 min_distances = self._update_min_distances(features, min_distances, centers[i])
@@ -208,6 +217,7 @@ class KCenterGreedyOnline(KCenter):
         if embedding.ndim != 2:
             raise ValueError(f"unknown dimension for embedding ({embedding.ndim})")
 
+        self.device = embedding.device
         additional_selected_idxs = []
         additional_coreset_size = max(1, int(embedding.shape[0] * self.sampling_ratio))
         # train the reduction projection in the first run
@@ -223,12 +233,12 @@ class KCenterGreedyOnline(KCenter):
             assert idx not in additional_selected_idxs, "New indices should not be in selected indices."
             min_distances[idx] = 0  # ensure index is never picked again
             additional_selected_idxs.append(idx)
-            self.reduced_coreset.append(reduced_embeddings[idx])
-            self.coreset.append(embedding[idx])
+            self.reduced_coreset.append(reduced_embeddings[idx].cpu())
+            self.coreset.append(embedding[idx].cpu())
             min_distances = self._update_min_distances(reduced_embeddings, min_distances, reduced_embeddings[idx])
 
     def get_coreset(self):
-        return torch.stack(self.coreset)
+        return torch.stack(self.coreset).to(self.device)
 
 
 class KCenterGreedyOnDemand(KCenterGreedyOnline):

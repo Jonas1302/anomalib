@@ -102,6 +102,7 @@ class Patchcore(AnomalyModule):
         Returns:
             Dict[str, np.ndarray]: Embedding Vector
         """
+        assert isinstance(self, ClassificationPatchcore) or (batch["label"] == 0).all(), "can train normal Patchcore only with good images"
         self.model(batch["image"], ground_truths=batch.get("mask"), labels=batch.get("label"))
 
     def on_validation_start(self) -> None:
@@ -111,6 +112,7 @@ class Patchcore(AnomalyModule):
         #   is run within train epoch.
         logger.info("Applying core-set subsampling to get the embedding.")
         self.model.calculate_coreset()
+        self.model.coreset_sampling.cleanup()
 
     def validation_step(self, batch, _):  # pylint: disable=arguments-differ
         """Get batch of anomaly maps from input image batch.
@@ -153,7 +155,7 @@ class MultiStepPatchcore(Patchcore):
 
 class ClassificationPatchcore(Patchcore):
     def __init__(self, num_classes: int, use_threshold: bool = True, *args, **kwargs):
-        super().__init__(*args, num_classes=num_classes, use_threshold=use_threshold, **kwargs)
+        super().__init__(*args, num_classes=num_classes, use_threshold=use_threshold, labeled_coreset=True, **kwargs)
         self.use_threshold = use_threshold
         assert self.use_threshold or num_classes != 1, f"{self.use_threshold=}, {num_classes=}"
 
@@ -219,7 +221,6 @@ class PatchcoreLightning:
             anomaly_map_with_neighbours=hparams.model.get("anomaly_map_with_neighbours", False),
             locally_aware_patch_features=hparams.model.get("locally_aware_patch_features", True),
             task=hparams.dataset.get("task", "segmentation"),
-            labeled_coreset=hparams.model.get("labeled_coreset", False),
             anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
             num_classes=hparams.dataset.get("num_classes", None),
             lr=hparams.model.get("lr"),

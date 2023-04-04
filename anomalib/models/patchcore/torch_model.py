@@ -233,10 +233,12 @@ class LabeledPatchcore(PatchcoreModel):
         super().__init__(*args, **kwargs)
         del self.memory_bank
         self.anomaly_threshold = anomaly_threshold
-        self.num_classes = num_classes
+        self.num_classes = 2 if num_classes == 1 else num_classes
         self.memory_banks = LabeledPatchcore.MemoryBanks(self)
         self.coreset_sampling.min_num_embeddings = 1000  # use at least 1000 embeddings from each class (if possible)
-        self.coreset_samplings: Dict[str, KCenter] = {}  # will contain one entry per label
+        self.coreset_samplings: Dict[int, KCenter] = {i: copy.copy(self.coreset_sampling) for i in range(self.num_classes)}
+        for i in range(1, self.num_classes):
+            self.coreset_samplings[i].sampling_ratio = 1  # use all anomalous patches
 
     def forward(self, input_tensor: Float[Tensor, "b _ w h"], ground_truths: Optional[Float[Tensor, "b w h"]] = None,
                 labels: Optional[Int[Tensor, "b"]] = None) \
@@ -249,15 +251,16 @@ class LabeledPatchcore(PatchcoreModel):
         if self.training:
             for i in range(batch_size):
                 embedding: Float[Tensor, "_ f"]
-                if labels[i] != 0:
+                label: int = labels[i].item()
+                if label != 0:
                     # only add anomalous embeddings
                     _, embedding = separate_anomaly_embeddings(embeddings[i], ground_truths[i], self.anomaly_threshold)
                 else:
                     embedding = self.reshape_embedding(embeddings[i].unsqueeze(0))
                 # Note: `self.coreset_sampling` is used as an empty blueprint, it allows us to share its projection
                 #   model across all samplings by copying it
-                self.coreset_samplings.setdefault(labels[i].item(), copy.copy(self.coreset_sampling)).update(embedding)
-                assert 0 <= labels[i] < self.num_classes, f"{labels[i]=}"
+                self.coreset_samplings[label].update(embedding)
+                assert 0 <= label < self.num_classes, f"{label=}"
             return
         else:
             results = []
@@ -316,6 +319,7 @@ class LabeledPatchcore(PatchcoreModel):
     def calculate_coreset(self):
         for label, coreset_sampling in self.coreset_samplings.items():
             self.memory_banks[label] = coreset_sampling.get_coreset()
+            coreset_sampling.cleanup()
 
     class MemoryBanks:
         """Creates and allows access to memory banks.
