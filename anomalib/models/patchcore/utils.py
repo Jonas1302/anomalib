@@ -20,7 +20,7 @@ def process_pred_masks(
             .scatter(dim=1, index=anomaly_maps.argmax(dim=1, keepdim=True), value=True)
         pred_patch_masks: Bool[Tensor, "b c p p"] = torch.zeros_like(anomaly_patch_maps, dtype=torch.bool) \
             .scatter(dim=1, index=anomaly_patch_maps.argmax(dim=1, keepdim=True), value=True)
-    elif len(threshold.value.shape) > 0:  # one threshold for each class
+    elif len(threshold.value.shape) > 0 and threshold.value.shape[0] > 1:  # one threshold for each class
         # note: this means a patch can be classified as multiple classes if `sum(threshold.value)` < 1
         pred_masks: Bool[Tensor, "b w h c"] = anomaly_maps.permute(0, 2, 3, 1) >= threshold.value
         pred_masks: Bool[Tensor, "b c w h"] = pred_masks.permute(0, 3, 1, 2)  # permute back to original shape

@@ -299,13 +299,16 @@ class LabeledPatchcore(PatchcoreModel):
 
         # lowest anomaly scores for each patch
         closest_anomaly_map: Float[Tensor, "p*p"] = torch.cat(list(anomaly_patch_maps.values())[1:]).min(dim=0)[0]
+
+        # if binary classification, then we need only the first anomaly map because the second one is 1-first_map
+        output_classes = 1 if self.num_classes == 2 else self.num_classes
         # calculate anomaly map per label; values are between 0 and 1 where a higher value means closer to i-th coreset
         normed_anomaly_patch_maps: Float[Tensor, "c 1 p*p"] = torch.stack([
             self._get_anomaly_map(closest_anomaly_map, anomaly_patch_maps[0]) if i == 0 else
             self._get_anomaly_map(anomaly_patch_maps[0], anomaly_patch_maps[i])
-            for i in range(self.num_classes)
+            for i in range(output_classes)
         ])
-        normed_anomaly_patch_maps: Float[Tensor, "c 1 p p"] = normed_anomaly_patch_maps.reshape((self.num_classes, 1, width, height))
+        normed_anomaly_patch_maps: Float[Tensor, "c 1 p p"] = normed_anomaly_patch_maps.reshape((output_classes, 1, width, height))
 
         normed_anomaly_maps: Float[Tensor, "1 c w h"] = self.anomaly_map_generator(normed_anomaly_patch_maps).permute(1, 0, 2, 3)
         normed_anomaly_patch_maps: Float[Tensor, "1 c p p"] = normed_anomaly_patch_maps.permute(1, 0, 2, 3)
