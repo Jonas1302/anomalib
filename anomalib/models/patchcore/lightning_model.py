@@ -15,6 +15,7 @@ from torch import Tensor
 
 from anomalib.models.components import AnomalyModule, KCenterGreedyBulk, KCenterGreedyOnline, KCenterGreedyOnDemand, KCenterRandom, KCenterAll
 from anomalib.models.patchcore.classifier import TransferLearningClassifier, PatchBasedClassifier
+from anomalib.models.patchcore.miro import MIRO
 from anomalib.models.patchcore.torch_model import PatchcoreModel, LabeledPatchcore
 from anomalib.models.patchcore.utils import process_pred_masks, process_label_and_score
 
@@ -134,6 +135,9 @@ class Patchcore(AnomalyModule):
 
         return batch
 
+    def overwrite_backbone(self, backbone):
+        self.model.overwrite_backbone(backbone)
+
 
 class MultiStepPatchcore(Patchcore):
     def __init__(self, *args, **kwargs):
@@ -173,7 +177,7 @@ class ClassificationPatchcore(Patchcore):
         return self.predict_step(batch, _)
 
 
-class PatchcoreLightning:
+class PatchcoreLightning(AnomalyModule):
     """PatchcoreLightning Module to train PatchCore algorithm.
 
     Args:
@@ -207,6 +211,8 @@ class PatchcoreLightning:
             additional_kwargs["use_global_embedding"] = True
         elif model_type == "embedding-mlp":
             cls2 = PatchBasedClassifier
+        elif model_type == "miro":
+            cls2 = MIRO
         else:
             raise ValueError(f"unknown {model_type=}")
 
@@ -223,11 +229,14 @@ class PatchcoreLightning:
             task=hparams.dataset.get("task", "segmentation"),
             anomaly_threshold=hparams.model.get("anomaly_threshold", 0.1),
             num_classes=hparams.dataset.get("num_classes", None),
+            num_categories=hparams.dataset.num_categories,
             lr=hparams.model.get("lr"),
             hidden_size=hparams.model.get("hidden_size"),
             use_threshold=hparams.model.get("use_threshold"),
             dropout=hparams.model.get("use_dropout"),
             freeze_batch_norm=hparams.model.get("freeze_batch_norm"),
+            pretrained_miro_weights=hparams.model.get("pretrained_miro_weights"),
+            supress_feature_extraction=hparams.model.get("supress_feature_extraction", False),
             **additional_kwargs,
         )
         obj.save_hyperparameters(hparams)

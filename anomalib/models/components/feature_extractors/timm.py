@@ -7,9 +7,11 @@ This script extracts features from a CNN network
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from abc import abstractmethod, ABC
+
 import math
 import warnings
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import timm
 import torch
@@ -18,12 +20,15 @@ from torch import Tensor, nn
 logger = logging.getLogger(__name__)
 
 
-def get_feature_extractor(backbone: str, layers: List[str], pre_trained: bool = True):
-    if backbone.startswith("vit"):
-        cls = ViT
+def get_feature_extractor(backbone_name: str, layers: List[str], pre_trained: bool = True, pretrained_model=None):
+    if pretrained_model is None and not backbone_name.startswith("vit"):
+        return FeatureExtractor(backbone_name, layers=layers, pre_trained=pre_trained)
+    elif "resnet" in backbone_name:
+        return ResNet(backbone_name, layers=layers, pre_trained=pre_trained, pretrained_backbone=pretrained_model)
+    elif backbone_name.startswith("vit"):
+        return ViT(backbone_name, layers=layers, pre_trained=pre_trained, pretrained_backbone=pretrained_model)
     else:
-        cls = FeatureExtractor
-    return cls(backbone=backbone, layers=layers, pre_trained=pre_trained)
+        raise ValueError(f"unknown {backbone_name=}")
 
 
 class TimmFeatureExtractor(nn.Module):
@@ -57,14 +62,17 @@ class TimmFeatureExtractor(nn.Module):
         self.layers = layers
         self.idx = self._map_layer_to_idx()
         self.requires_grad = requires_grad
-        self.feature_extractor = timm.create_model(
-            backbone,
-            pretrained=pre_trained,
-            features_only=True,
-            exportable=True,
-            out_indices=self.idx,
-        )
-        self.out_dims = self.feature_extractor.feature_info.channels()
+        if isinstance(backbone, str):
+            self.feature_extractor = timm.create_model(
+                backbone,
+                pretrained=pre_trained,
+                features_only=True,
+                exportable=True,
+                out_indices=self.idx,
+            )
+        else:
+            self.feature_extractor = backbone
+        #self.out_dims = self.feature_extractor.feature_info.channels()
         self._features = {layer: torch.empty(0) for layer in self.layers}
 
     def _map_layer_to_idx(self, offset: int = 3) -> List[int]:
@@ -77,12 +85,15 @@ class TimmFeatureExtractor(nn.Module):
             Feature map extracted from the CNN
         """
         idx = []
-        features = timm.create_model(
-            self.backbone,
-            pretrained=False,
-            features_only=False,
-            exportable=True,
-        )
+        if isinstance(self.backbone, str):
+            features = timm.create_model(
+                self.backbone,
+                pretrained=False,
+                features_only=False,
+                exportable=True,
+            )
+        else:
+            features = self.backbone
         for i in self.layers:
             try:
                 idx.append(list(dict(features.named_children()).keys()).index(i) - offset)
@@ -125,28 +136,53 @@ class FeatureExtractor(TimmFeatureExtractor):
         super().__init__(*args, **kwargs)
 
 
-class ViT(nn.Module):
-    def __init__(self, backbone: str = "vit_base_patch16_224", *, layers: List[int], pre_trained=True):
+class FeatureExtractor2(nn.Module, ABC):
+    def __init__(self, backbone_name: str = "vit_base_patch16_224", *, layers: Union[List[str], List[int]], pre_trained=True, pretrained_backbone=None):
         super().__init__()
 
-        self.model = timm.create_model(backbone, pretrained=pre_trained)
+        if pretrained_backbone:
+            self.model = pretrained_backbone
+        else:
+            self.model = timm.create_model(backbone_name, pretrained=pre_trained)
         self.model.eval()
 
         # from https://discuss.pytorch.org/t/how-can-l-load-my-best-model-as-a-feature-extractor-evaluator/17254/6
         self.activation = {}
-        def get_activation(name):
-            def hook(model, input_, output):
-                batch_size, num_patches, num_features = output.shape
-                width = height = int(math.sqrt(num_patches - 1))
-                assert width * height == num_patches - 1
-                self.activation[name] = output.detach()[:, 1:, :].permute(0, 2, 1).reshape(batch_size, num_features, width, height)
-            return hook
+        blocks = self.get_blocks()
 
-        blocks = dict(dict(self.model.named_children())["blocks"].named_children())
         for layer in layers:
-            blocks[str(layer)].register_forward_hook(get_activation(str(layer)))
+            blocks[str(layer)].register_forward_hook(self.get_activation(str(layer)))
 
     def forward(self, in_tensor):
         with torch.no_grad():
             self.model(in_tensor)
         return self.activation
+
+    @abstractmethod
+    def get_blocks(self):
+        pass
+
+    @abstractmethod
+    def get_activation(self, name):
+        pass
+
+class ViT(FeatureExtractor2):
+    def get_blocks(self):
+        return dict(dict(self.model.named_children())["blocks"].named_children())
+
+    def get_activation(self, name):
+        def hook(model, input_, output):
+            batch_size, num_patches, num_features = output.shape
+            width = height = int(math.sqrt(num_patches - 1))
+            assert width * height == num_patches - 1
+            self.activation[name] = output.detach()[:, 1:, :].permute(0, 2, 1).reshape(batch_size, num_features, width, height)
+        return hook
+
+class ResNet(FeatureExtractor2):
+    def get_blocks(self):
+        return dict(self.model.named_children())
+
+    def get_activation(self, name):
+        def hook(model, input_, output):
+            self.activation[name] = output.detach()
+        return hook

@@ -66,5 +66,5 @@ def process_label_and_score(
                 pred_scores[i][label] = anomaly_patch_maps[i, label].min().item()
         pred_labels.append(label)
 
-    outputs["pred_scores"] = pred_scores.squeeze()
+    outputs["pred_scores"] = pred_scores.squeeze(dim=1)
     outputs["pred_labels"] = pred_labels

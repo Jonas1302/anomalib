@@ -32,6 +32,7 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
         anomaly_map_with_neighbours: bool = False,
         locally_aware_patch_features: bool = True,
         coreset_sampling: KCenter = None,
+        pretrained_miro_weights: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -127,6 +128,10 @@ class PatchcoreModel(DynamicBufferModule, nn.Module):
     def calculate_coreset(self):
         """Creates a subsampled coreset from the collected embeddings."""
         self.memory_bank = self.coreset_sampling.get_coreset()
+
+    def overwrite_backbone(self, backbone):
+        self.feature_extractor = get_feature_extractor(self.backbone, layers=self.layers, pretrained_model=backbone)
+        self.feature_extractor.eval()
 
     @staticmethod
     def reshape_embedding(embedding: Float[Tensor, "b f p p"]) -> Float[Tensor, "b*p*p f"]:

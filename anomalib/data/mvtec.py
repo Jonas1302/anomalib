@@ -55,7 +55,7 @@ from anomalib.data.utils.split import (
     create_validation_set_from_test_set,
     split_normal_images_in_train_set,
 )
-from anomalib.models import EmbeddingExtractor
+from anomalib.utils.typing import EmbeddingExtractor
 from anomalib.models.components import KCenterGreedyBulk
 from anomalib.pre_processing import PreProcessor
 
@@ -161,7 +161,7 @@ def make_mvtec_dataset(
     # store original label in case it's overwritten
     samples["original_label"] = samples.label
 
-    if any([isinstance(label, DictConfig) for category in custom_mapping.custom_labels.values() for label in category.values()]):
+    if any([isinstance(label, DictConfig) for category in categories for label in custom_mapping.custom_labels[category].values()]):
         # new format
         samples, label_mapping = _apply_custom_mapping_v2(samples, categories, custom_mapping, binary_label_indices)
     elif binary_label_indices:
@@ -372,6 +372,8 @@ class MVTecDataset(VisionDataset):
             categories = [categories]
 
         for category in categories:
+            if custom_mapping and custom_mapping.custom_labels.get(category) is None:
+                custom_mapping.custom_labels[category] = {}  # prevents multiple checks for `None` down the road
             assert (not custom_mapping) \
                    or custom_mapping.custom_labels[category].get("good") != "anomaly" \
                    or task == "classification", \
@@ -394,6 +396,7 @@ class MVTecDataset(VisionDataset):
             binary_label_indices=(task != "classification"),
         )
         self.num_classes = 1 if len(self.label_mapping) == 2 else len(self.label_mapping)
+        self.num_categories = len(set(self.samples.category))
         self.images_per_class = self._calculate_images_per_class()
         logger.warning(f"number of images for {split}: {self.images_per_class} (from categories {sorted(set(self.samples.category))})")
 
@@ -472,6 +475,7 @@ class PatchwiseWrapper:
     ):
         self.dataset = dataset
         self.num_classes = dataset.num_classes
+        self.num_categories = dataset.num_categories
         self.label_mapping = dataset.label_mapping
         self.embedding_extractor = embedding_extractor
         self.num_patches = num_patches_per_dimension ** 2
@@ -726,7 +730,7 @@ class MVTec(LightningDataModule):
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
         """Get validation dataloader."""
-        return DataLoader(self.val_data, shuffle=True, batch_size=self.test_batch_size, num_workers=self.num_workers)
+        return DataLoader(self.val_data, shuffle=False, batch_size=self.test_batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
         """Get test dataloader."""
@@ -741,6 +745,10 @@ class MVTec(LightningDataModule):
     @property
     def num_classes(self) -> int:
         return self.test_data.num_classes
+
+    @property
+    def num_categories(self) -> int:
+        return self.test_data.num_categories
 
     def set_train_embedding_extractor(self, embedding_extractor: EmbeddingExtractor, num_patches_per_dimension: int,
                                       anomaly_threshold: float, use_coreset_subsampling: bool = False):

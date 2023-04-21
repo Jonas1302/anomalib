@@ -15,7 +15,6 @@ import torch
 from skimage.segmentation import mark_boundaries
 from torch import Tensor
 
-from anomalib.data.utils import read_image
 from anomalib.post_processing.post_process import superimpose_anomaly_map, add_class_label
 
 
@@ -103,6 +102,7 @@ class Visualizer:
                 if isinstance(image, Tensor):
                     image = image.cpu().numpy()
             else:
+                from anomalib.data.utils import read_image  # local import to prevent circular imports in some cases
                 # re-read because `batch["image"]` was normalized
                 image = read_image(path=batch["image_path"][i], image_size=(height, width))
 

@@ -38,9 +38,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-FeatureExtractor = Callable[[Tensor], Tensor]
-EmbeddingExtractor = Callable[[Tensor], Tensor]
-
 
 def _snake_to_pascal_case(model_name: str) -> str:
     """Convert model name from snake case to Pascal case.

@@ -224,3 +224,6 @@ class PatchBasedClassifier(Classifier):
         if len(input_tensor.shape) == 3:
             input_tensor = input_tensor.unsqueeze(0)
         return self.backbone.get_embedding(input_tensor)
+
+    def overwrite_backbone(self, backbone):
+        self.backbone.overwrite_backbone(backbone)
