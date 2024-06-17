@@ -1,3 +1,6 @@
+# Adaption
+This repository is a modification of [anomalib](https://github.com/openvinotoolkit/anomalib) for the paper "Domain-independent detection of known anomalies".
+
 <div align="center">
 
 <img src="docs/source/images/logos/anomalib-wide-blue.png" width="600px">
