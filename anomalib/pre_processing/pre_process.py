@@ -96,7 +96,7 @@ def get_transforms(
 
     if config is not None:
         if isinstance(config, str):
-            transforms = A.load(filepath=config, data_format="yaml")
+            transforms = A.load(config, data_format="yaml")
         elif isinstance(config, A.Compose):
             transforms = config
         else:

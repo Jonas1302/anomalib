@@ -1,0 +1,50 @@
+train_ratio_for_anomalies: 0.5  # ratio of data added to training dataset for all anomalous labels that are considered normal
+limit_train_images: false  # [false, max_anomaly, sum_anomalies, _int_, _float_]
+use_coreset_subsampling: false  # only applicable if training on patches
+category: [carpet, hazelnut, leather, metal_nut, pill, tile, wood]
+custom_labels:  # behind each label is the number of test images in the MVTec dataset
+  carpet:
+    good:  # 28 (219520, 21952)
+      split: [train, test]
+    color:  # 19 (335, 155)
+      label: anomaly
+      split: [train, test]
+  hazelnut:
+    good:  # 40 (306544, 31360)
+      split: [train, test]
+    print:  # 17 (329, 389)
+      label: anomaly
+      split: [train, test]
+  leather:
+    good:  # 32 (192080, 25088)
+      split: [train, test]
+    color:  # 19 (80, 81)
+      label: anomaly
+      split: [train, test]
+  metal_nut:
+    good:  # 22 (172480, 17248)
+      split: [train, test]
+    color:  # 22 (244, 497)
+      label: anomaly
+      split: [train, test]
+  pill:
+    good:  # 26 (209328, 20384)
+      split: [train, test]
+    color:  # 25 (84, 78)
+      label: anomaly
+      split: [train, test]
+  tile:
+    good:  # 33 (180320, 25872)
+      split: [train, test]
+    gray_stroke:  # 16 (418, 333)
+      label: anomaly
+      split: [train, test]
+    oil:  # 18 (1497, 1653)
+      label: anomaly
+      split: [train, test]
+  wood:
+    good:  # 19 (193648, 14896)
+      split: [train, test]
+    color:  # 8 (170, 206)
+      label: anomaly
+      split: [train, test]

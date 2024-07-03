@@ -1,0 +1,130 @@
+dataset:
+  name: paper  # also the name of the w&b project
+  format: mvtec  # options: [mvtec, btech, folder]
+  path: datasets/MVTec
+  category: null  # will be overwritten
+  task: classification
+  custom_mapping: configs/paper/dataset-mapping-hole.yaml  # -{color,crack,hole}
+  extensions: null  # only used if `format: folder`
+  split_ratio: 1.0  # only applied if test data doesn't contain good images (at least for `format: mvtec`)
+  image_size: 224
+  train_batch_size: 8
+  test_batch_size: 32
+  num_workers: 8
+  transform_config:
+    train: configs/paper/transformations-cropping-224.yaml
+    val: configs/paper/transformations-cropping-224.yaml
+  create_validation_set: false  # use half of all test images for validation
+  tiling:
+    apply: false
+    tile_size: null
+    stride: null
+    remove_border_count: 0
+    use_random_tiling: False
+    random_tile_count: 16
+
+model:
+  name: patchcore
+  # "embedding-mlp" is SEMLP
+  # "normal" is default PatchCore
+  type: embedding-mlp  # options: [normal, labeled-coreset, transfer-learning{+mlp}, embedding{-mlp,-global-fc,-global-mlp}, miro]
+  lr: 0.0001  # unused if classification is done by coresets
+  hidden_size: 32
+  use_dropout: false
+  freeze_batch_norm: true  # whether to freeze batch norm layers during transfer learning
+  backbone: vit_base_patch8_224 # options: [vit_base_patch8_224, wide_resnet50_2]
+  pre_trained: true
+  #pretrained_miro_weights: /home/jonasb/workspace/test/model-miro-color-carpet.ckpt
+  #layers: [layer2, layer3]
+  layers: [5, 9]
+  coreset_sampling_ratio: 0.01 #0.1  # ratio of coreset size to number of sampled embeddings for large sample size
+  coreset_sampling_mode: online  # options: [bulk, online, ondemand, random, all]
+  num_neighbors: 9
+  locally_aware_patch_features: true
+  anomaly_map_with_neighbours: false
+  normalization_method: null # options: [null, min_max, cdf]  # use min_max to normalize for visualization
+  anomaly_threshold: 0.1
+  use_threshold: true  # applies only for classification, must be true for binary classification
+
+metrics:
+  image:
+    - AUROC
+    - F1Score
+    - Recall
+    - Precision
+    - Specificity
+  pixel:
+    - AUROC
+    - F1Score
+  threshold:
+    image_default: 0.5
+    pixel_default: 0.5
+    adaptive: true
+    on_test_image_level: true
+
+visualization:
+  show_images: False # show images on the screen
+  save_images: True # save images to the file system
+  log_images: True # log images to the available loggers (if any)
+  image_save_path: images # path to which images will be saved
+  mode: full # options: ["full", "simple"]
+
+project:
+  seed: 42
+  path: results
+
+logging:
+  logger: [wandb] # options: [comet, tensorboard, wandb, csv] or combinations.
+  log_graph: false # Logs the model graph to respective logger.
+
+optimization:
+  export_mode: null # options: onnx, openvino
+
+# PL Trainer Args. Don't add extra parameter here.
+trainer:
+  accelerator: auto # <"cpu", "gpu", "tpu", "ipu", "hpu", "auto">
+  accumulate_grad_batches: 1
+  amp_backend: native
+  auto_lr_find: false
+  auto_scale_batch_size: false
+  auto_select_gpus: false
+  benchmark: false
+  check_val_every_n_epoch: 1 # Don't validate before extracting features.
+  default_root_dir: null
+  detect_anomaly: false
+  deterministic: false
+  devices: 1
+  enable_checkpointing: true
+  enable_model_summary: true
+  enable_progress_bar: true
+  fast_dev_run: false
+  gpus: null # Set automatically
+  gradient_clip_val: 0
+  ipus: null
+  limit_predict_batches: 1.0
+  limit_test_batches: 1.0
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  log_every_n_steps: 20
+  log_gpu_memory: null
+  max_epochs: 1
+  max_steps: -1
+  max_time: null
+  min_epochs: null
+  min_steps: null
+  move_metrics_to_cpu: false
+  multiple_trainloader_mode: max_size_cycle
+  num_nodes: 1
+  num_processes: null
+  num_sanity_val_steps: 0
+  overfit_batches: 0.0
+  plugins: null
+  precision: 32
+  profiler: null
+  reload_dataloaders_every_n_epochs: 0
+  replace_sampler_ddp: true
+  strategy: null
+  sync_batchnorm: false
+  tpu_cores: null
+  track_grad_norm: -1
+  val_check_interval: 1.0 # Don't validate before extracting features.

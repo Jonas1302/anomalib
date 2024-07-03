@@ -1,6 +1,9 @@
 # Adaption
 This repository is a modification of [anomalib](https://github.com/openvinotoolkit/anomalib) for the paper "Domain-independent detection of known anomalies".
 
+The hybrid task described in the paper can be run by the `anomalib_wrapper.train_domain_generalization` module.
+You may adjust the `configs/paper/main.yaml` and make sure to download the original MVTec AD dataset to `datasets/MVTec`.
+
 <div align="center">
 
 <img src="docs/source/images/logos/anomalib-wide-blue.png" width="600px">
